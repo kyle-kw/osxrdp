@@ -86,16 +86,28 @@ bool MirrorAppServer::IsRunning() {
     return IsState(State_Running);
 }
 
-bool MirrorAppServer::HasRemoteClipboardFiles() {
+bool MirrorAppServer::HasConnectedClient() {
     pthread_mutex_lock(&_clientLock);
-    ClipboardManager* clipboard = NULL;
+    bool connected = _client != NULL;
+    pthread_mutex_unlock(&_clientLock);
+    return connected;
+}
+
+bool MirrorAppServer::HasRemoteClipboardFiles() {
+    return GetRemoteClipboardFileCount() > 0;
+}
+
+int MirrorAppServer::GetRemoteClipboardFileCount() {
+    pthread_mutex_lock(&_clientLock);
+    int count = 0;
     if (_client != NULL && _client->user_data != NULL) {
         struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
-        clipboard = ctx != NULL ? ctx->Clipboard : NULL;
+        if (ctx != NULL && ctx->Clipboard != NULL) {
+            count = ctx->Clipboard->RemoteFileCount();
+        }
     }
-    bool result = clipboard != NULL && clipboard->HasRemoteFiles();
     pthread_mutex_unlock(&_clientLock);
-    return result;
+    return count;
 }
 
 void MirrorAppServer::StartRemoteClipboardFileCopy() {
@@ -104,6 +116,17 @@ void MirrorAppServer::StartRemoteClipboardFileCopy() {
         struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
         if (ctx != NULL && ctx->Clipboard != NULL) {
             ctx->Clipboard->StartRemoteFileCopy();
+        }
+    }
+    pthread_mutex_unlock(&_clientLock);
+}
+
+void MirrorAppServer::StartRemoteClipboardFileCopyToDownloads() {
+    pthread_mutex_lock(&_clientLock);
+    if (_client != NULL && _client->user_data != NULL) {
+        struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
+        if (ctx != NULL && ctx->Clipboard != NULL) {
+            ctx->Clipboard->StartRemoteFileCopyToDownloads();
         }
     }
     pthread_mutex_unlock(&_clientLock);

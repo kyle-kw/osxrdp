@@ -18,6 +18,23 @@ typedef void NSString;
 typedef void NSURL;
 #endif
 
+#ifdef __OBJC__
+// Posted on main queue when remote file list becomes available for save.
+extern NSString* const OSXRDPRemoteFilesAvailableNotification;
+extern NSString* const OSXRDPRemoteFilesCountUserInfoKey;
+#endif
+
+enum FileCopyFinishReason {
+    FileCopyFinishReason_Success = 0,
+    FileCopyFinishReason_Cancelled,
+    FileCopyFinishReason_Disconnected,
+    FileCopyFinishReason_NotWritable,
+    FileCopyFinishReason_CreateFailed,
+    FileCopyFinishReason_ProtocolFailed,
+    FileCopyFinishReason_NoFiles,
+    FileCopyFinishReason_Busy
+};
+
 class ClipboardManager {
 public:
     ClipboardManager();
@@ -25,7 +42,9 @@ public:
 
     void HandleCommand(xipc_t* client, xstream_t* cmd);
     bool HasRemoteFiles();
+    int RemoteFileCount();
     void StartRemoteFileCopy();
+    void StartRemoteFileCopyToDownloads();
 
 private:
     enum PendingClipType {
@@ -57,6 +76,7 @@ private:
     int _fileCopyChoosingFolder;
     int _fileCopyCancelled;
     int _fileCopyCurrentItemIndex;
+    int _fileCopyItemTotal;
     int _fileCopyStreamId;
     int _fileCopyExpectedStreamId;
     int _fileCopyCurrentLindex;
@@ -66,6 +86,7 @@ private:
     void* _fileCopyWindow;
     void* _fileCopyCurrentHandle;
     void* _fileCopyCurrentPath;
+    void* _fileCopyDestinationFolder;
 
     pthread_mutex_t _lock;
     pthread_t _monitorThread;
@@ -118,15 +139,18 @@ private:
     static bool IsSafeRelativeFileName(NSString* fileName);
 
     bool ParseRemoteFileList(const void* data, int dataLen);
+    void NotifyRemoteFilesAvailable(int count);
     void BeginRemoteFileCopyToFolder(NSURL* folderUrl);
     void StartNextRemoteFileItem();
     void RequestCurrentRemoteFileChunk();
-    void FinishRemoteFileCopy(bool success);
+    void FinishRemoteFileCopy(FileCopyFinishReason reason);
     void CancelRemoteFileCopy();
     bool PrepareRemoteFileDestinations(NSURL* folderUrl);
     bool CheckWritableFolder(NSURL* folderUrl);
     void ShowFileCopyAlert(NSString* message);
+    void ShowFileCopyResult(FileCopyFinishReason reason, NSURL* destinationFolder);
     void UpdateFileCopyWindow(NSString* fileName);
+    static NSString* LocalizedFileCopyReason(FileCopyFinishReason reason);
     bool UpdatePasteboardFileItems(int* itemCount);
     bool BuildFileList(char** fileListData, int* fileListLen);
     bool GetPasteboardText(char** utf8Text, int* utf8Len, int* changeCount);

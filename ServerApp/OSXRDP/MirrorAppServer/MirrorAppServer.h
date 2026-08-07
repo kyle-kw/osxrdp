@@ -19,8 +19,11 @@ public:
     void Start();
     void Stop();
     bool IsRunning();
+    bool HasConnectedClient();
     bool HasRemoteClipboardFiles();
+    int GetRemoteClipboardFileCount();
     void StartRemoteClipboardFileCopy();
+    void StartRemoteClipboardFileCopyToDownloads();
     
 private:
     // state machine

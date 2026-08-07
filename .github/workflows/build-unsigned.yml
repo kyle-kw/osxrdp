@@ -29,6 +29,10 @@ jobs:
           uname -m
           xcodebuild -version
           xcode-select -p
+          clang --version
+
+      - name: Unit tests
+        run: bash tests/run_unit_tests.sh
 
       - name: Build unsigned package
         env:

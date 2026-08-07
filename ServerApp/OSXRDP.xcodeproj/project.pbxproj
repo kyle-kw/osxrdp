@@ -12,6 +12,7 @@
 		39738CFB2F10BFB6004D50EF /* xrdp-keygen in CopyFiles */ = {isa = PBXBuildFile; fileRef = 39738CFA2F10BFAC004D50EF /* xrdp-keygen */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		9B4A9EA52ED5968900260492 /* libScreenMirrorLib.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B4A9EA42ED5968900260492 /* libScreenMirrorLib.a */; };
 		9B6302022F0D01BE00451117 /* ServiceManagement.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9B6302012F0D01BE00451117 /* ServiceManagement.framework */; };
+		A1B2C3D42F5A00010000F001 /* UserNotifications.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D42F5A00010000F002 /* UserNotifications.framework */; };
 		9B84707B2F0E1F44001E143F /* xrdp in CopyFiles */ = {isa = PBXBuildFile; fileRef = 9B8470792F0E1F13001E143F /* xrdp */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -35,6 +36,7 @@
 		9B4A9E6F2ED5955E00260492 /* OSXRDP.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = OSXRDP.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B4A9EA42ED5968900260492 /* libScreenMirrorLib.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; path = libScreenMirrorLib.a; sourceTree = BUILT_PRODUCTS_DIR; };
 		9B6302012F0D01BE00451117 /* ServiceManagement.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = ServiceManagement.framework; path = System/Library/Frameworks/ServiceManagement.framework; sourceTree = SDKROOT; };
+		A1B2C3D42F5A00010000F002 /* UserNotifications.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotifications.framework; path = System/Library/Frameworks/UserNotifications.framework; sourceTree = SDKROOT; };
 		9B8470752F0DECB4001E143F /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		9B8470792F0E1F13001E143F /* xrdp */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; path = xrdp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -56,6 +58,7 @@
 				395849CF2F471FFA005CC60C /* Accelerate.framework in Frameworks */,
 				39464B5F2F43317700466D8B /* Carbon.framework in Frameworks */,
 				9B6302022F0D01BE00451117 /* ServiceManagement.framework in Frameworks */,
+				A1B2C3D42F5A00010000F001 /* UserNotifications.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,6 +90,7 @@
 				39464B5E2F43317700466D8B /* Carbon.framework */,
 				9B8470752F0DECB4001E143F /* Accelerate.framework */,
 				9B6302012F0D01BE00451117 /* ServiceManagement.framework */,
+				A1B2C3D42F5A00010000F002 /* UserNotifications.framework */,
 				9B4A9EA42ED5968900260492 /* libScreenMirrorLib.a */,
 			);
 			name = Frameworks;

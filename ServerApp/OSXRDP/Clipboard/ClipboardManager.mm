@@ -1,12 +1,16 @@
 #include "ClipboardManager.h"
 
 #import <AppKit/AppKit.h>
+#import <UserNotifications/UserNotifications.h>
 #import "../UI/ProgressDialog/FileCopyWindow.h"
 #include "osxrdp/packet.h"
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+NSString* const OSXRDPRemoteFilesAvailableNotification = @"OSXRDPRemoteFilesAvailableNotification";
+NSString* const OSXRDPRemoteFilesCountUserInfoKey = @"count";
 
 static const int XR_CHANNEL_FLAG_FIRST = 0x00000001;
 static const int XR_CHANNEL_FLAG_LAST = 0x00000002;
@@ -520,6 +524,7 @@ ClipboardManager::ClipboardManager()
 , _fileCopyChoosingFolder(0)
 , _fileCopyCancelled(0)
 , _fileCopyCurrentItemIndex(0)
+, _fileCopyItemTotal(0)
 , _fileCopyStreamId(1)
 , _fileCopyExpectedStreamId(0)
 , _fileCopyCurrentLindex(0)
@@ -528,7 +533,8 @@ ClipboardManager::ClipboardManager()
 , _fileCopyTransferredBytes(0)
 , _fileCopyWindow(NULL)
 , _fileCopyCurrentHandle(NULL)
-, _fileCopyCurrentPath(NULL) {
+, _fileCopyCurrentPath(NULL)
+, _fileCopyDestinationFolder(NULL) {
     pthread_mutex_init(&_lock, NULL);
     _localFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
     _remoteFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
@@ -593,14 +599,26 @@ ClipboardManager::~ClipboardManager() {
         CFRelease(_fileCopyCurrentPath);
         _fileCopyCurrentPath = NULL;
     }
+    if (_fileCopyDestinationFolder != NULL) {
+        CFRelease(_fileCopyDestinationFolder);
+        _fileCopyDestinationFolder = NULL;
+    }
     pthread_mutex_destroy(&_lock);
 }
 
 bool ClipboardManager::HasRemoteFiles() {
+    return RemoteFileCount() > 0;
+}
+
+int ClipboardManager::RemoteFileCount() {
     pthread_mutex_lock(&_lock);
-    bool result = _remoteFileClipboardReady != 0 && _fileCopyInProgress == 0 && _fileCopyChoosingFolder == 0;
+    int count = 0;
+    if (_remoteFileClipboardReady != 0 && _fileCopyInProgress == 0 && _fileCopyChoosingFolder == 0) {
+        NSMutableArray* items = RemoteFileItems(_remoteFileItems);
+        count = (int)[items count];
+    }
     pthread_mutex_unlock(&_lock);
-    return result;
+    return count;
 }
 
 void ClipboardManager::StartRemoteFileCopy() {
@@ -613,7 +631,7 @@ void ClipboardManager::StartRemoteFileCopy() {
     pthread_mutex_unlock(&_lock);
 
     if (canStart == false) {
-        ShowFileCopyAlert(NSLocalizedString(busy ? @"filecopy.alert.in_progress" : @"filecopy.alert.no_files", nil));
+        ShowFileCopyResult(busy ? FileCopyFinishReason_Busy : FileCopyFinishReason_NoFiles, nil);
         return;
     }
 
@@ -636,6 +654,49 @@ void ClipboardManager::StartRemoteFileCopy() {
         }
 
         BeginRemoteFileCopyToFolder([panel URL]);
+    });
+}
+
+void ClipboardManager::StartRemoteFileCopyToDownloads() {
+    pthread_mutex_lock(&_lock);
+    bool canStart = _remoteFileClipboardReady != 0 && _fileCopyInProgress == 0 && _fileCopyChoosingFolder == 0;
+    if (canStart) {
+        _fileCopyChoosingFolder = 1;
+    }
+    bool busy = _fileCopyInProgress != 0 || _fileCopyChoosingFolder != 0;
+    pthread_mutex_unlock(&_lock);
+
+    if (canStart == false) {
+        ShowFileCopyResult(busy ? FileCopyFinishReason_Busy : FileCopyFinishReason_NoFiles, nil);
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSArray<NSURL*>* urls = [[NSFileManager defaultManager] URLsForDirectory:NSDownloadsDirectory
+                                                                       inDomains:NSUserDomainMask];
+        NSURL* downloads = urls.count > 0 ? urls.firstObject : nil;
+        if (downloads == nil) {
+            pthread_mutex_lock(&_lock);
+            _fileCopyChoosingFolder = 0;
+            pthread_mutex_unlock(&_lock);
+            ShowFileCopyResult(FileCopyFinishReason_NotWritable, nil);
+            return;
+        }
+
+        NSError* error = nil;
+        BOOL created = [[NSFileManager defaultManager] createDirectoryAtURL:downloads
+                                                withIntermediateDirectories:YES
+                                                                 attributes:nil
+                                                                      error:&error];
+        if (created == NO) {
+            pthread_mutex_lock(&_lock);
+            _fileCopyChoosingFolder = 0;
+            pthread_mutex_unlock(&_lock);
+            ShowFileCopyResult(FileCopyFinishReason_NotWritable, nil);
+            return;
+        }
+
+        BeginRemoteFileCopyToFolder(downloads);
     });
 }
 
@@ -1893,9 +1954,55 @@ bool ClipboardManager::ParseRemoteFileList(const void* data, int dataLen) {
     [items removeAllObjects];
     [items addObjectsFromArray:newItems];
     _remoteFileClipboardReady = [items count] > 0 ? 1 : 0;
+    int availableCount = (int)[items count];
     pthread_mutex_unlock(&_lock);
 
-    return [newItems count] > 0;
+    if (availableCount > 0) {
+        NotifyRemoteFilesAvailable(availableCount);
+    }
+
+    return availableCount > 0;
+}
+
+void ClipboardManager::NotifyRemoteFilesAvailable(int count) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[NSNotificationCenter defaultCenter] postNotificationName:OSXRDPRemoteFilesAvailableNotification
+                                                            object:nil
+                                                          userInfo:@{ OSXRDPRemoteFilesCountUserInfoKey : @(count) }];
+
+        if (@available(macOS 10.14, *)) {
+            UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+            auto postNotification = ^{
+                UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+                content.title = NSLocalizedString(@"filecopy.notify.title", nil);
+                content.body = [NSString stringWithFormat:NSLocalizedString(@"filecopy.notify.body", nil), (long)count];
+                UNNotificationRequest* request =
+                    [UNNotificationRequest requestWithIdentifier:@"osxrdp.remote.files"
+                                                         content:content
+                                                         trigger:nil];
+                [center addNotificationRequest:request withCompletionHandler:nil];
+            };
+
+            [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings* settings) {
+                if (settings.authorizationStatus == UNAuthorizationStatusAuthorized ||
+                    settings.authorizationStatus == UNAuthorizationStatusProvisional) {
+                    postNotification();
+                    return;
+                }
+                if (settings.authorizationStatus == UNAuthorizationStatusDenied) {
+                    return;
+                }
+                // NotDetermined: request once, then post only if granted.
+                [center requestAuthorizationWithOptions:(UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+                                      completionHandler:^(BOOL granted, NSError* _Nullable error) {
+                    (void)error;
+                    if (granted) {
+                        postNotification();
+                    }
+                }];
+            }];
+        }
+    });
 }
 
 void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
@@ -1903,7 +2010,7 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
         pthread_mutex_lock(&_lock);
         _fileCopyChoosingFolder = 0;
         pthread_mutex_unlock(&_lock);
-        ShowFileCopyAlert(NSLocalizedString(@"filecopy.alert.permission", nil));
+        ShowFileCopyResult(FileCopyFinishReason_NotWritable, nil);
         return;
     }
 
@@ -1911,7 +2018,7 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
         pthread_mutex_lock(&_lock);
         _fileCopyChoosingFolder = 0;
         pthread_mutex_unlock(&_lock);
-        ShowFileCopyAlert(NSLocalizedString(@"filecopy.alert.failed", nil));
+        ShowFileCopyResult(FileCopyFinishReason_CreateFailed, nil);
         return;
     }
 
@@ -1921,10 +2028,12 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
     };
 
     pthread_mutex_lock(&_lock);
+    NSMutableArray* items = RemoteFileItems(_remoteFileItems);
     _fileCopyChoosingFolder = 0;
     _fileCopyInProgress = 1;
     _fileCopyCancelled = 0;
     _fileCopyCurrentItemIndex = 0;
+    _fileCopyItemTotal = (int)[items count];
     _fileCopyExpectedStreamId = 0;
     _fileCopyCurrentLindex = 0;
     _fileCopyCurrentOffset = 0;
@@ -1933,6 +2042,10 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
         CFRelease(_fileCopyWindow);
     }
     _fileCopyWindow = (__bridge_retained void*)window;
+    if (_fileCopyDestinationFolder != NULL) {
+        CFRelease(_fileCopyDestinationFolder);
+    }
+    _fileCopyDestinationFolder = (__bridge_retained void*)folderUrl;
     pthread_mutex_unlock(&_lock);
 
     [window showWindow];
@@ -1949,13 +2062,17 @@ void ClipboardManager::StartNextRemoteFileItem() {
             int itemIndex = _fileCopyCurrentItemIndex;
             pthread_mutex_unlock(&_lock);
 
-            if (cancelled || client == NULL) {
-                FinishRemoteFileCopy(false);
+            if (cancelled) {
+                FinishRemoteFileCopy(FileCopyFinishReason_Cancelled);
+                return;
+            }
+            if (client == NULL) {
+                FinishRemoteFileCopy(FileCopyFinishReason_Disconnected);
                 return;
             }
 
             if (itemIndex >= (int)[items count]) {
-                FinishRemoteFileCopy(true);
+                FinishRemoteFileCopy(FileCopyFinishReason_Success);
                 return;
             }
 
@@ -1971,7 +2088,7 @@ void ClipboardManager::StartNextRemoteFileItem() {
             if (isDir) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:targetPath withIntermediateDirectories:YES attributes:nil error:&error];
                 if (error != nil) {
-                    FinishRemoteFileCopy(false);
+                    FinishRemoteFileCopy(FileCopyFinishReason_CreateFailed);
                     return;
                 }
 
@@ -1984,13 +2101,13 @@ void ClipboardManager::StartNextRemoteFileItem() {
             NSString* parentPath = [targetPath stringByDeletingLastPathComponent];
             [[NSFileManager defaultManager] createDirectoryAtPath:parentPath withIntermediateDirectories:YES attributes:nil error:&error];
             if (error != nil || [[NSFileManager defaultManager] createFileAtPath:targetPath contents:nil attributes:nil] == NO) {
-                FinishRemoteFileCopy(false);
+                FinishRemoteFileCopy(FileCopyFinishReason_CreateFailed);
                 return;
             }
 
             NSFileHandle* handle = [NSFileHandle fileHandleForWritingAtPath:targetPath];
             if (handle == nil) {
-                FinishRemoteFileCopy(false);
+                FinishRemoteFileCopy(FileCopyFinishReason_CreateFailed);
                 return;
             }
 
@@ -2046,8 +2163,12 @@ void ClipboardManager::RequestCurrentRemoteFileChunk() {
     }
     pthread_mutex_unlock(&_lock);
 
-    if (client == NULL || fileSize <= offset) {
-        FinishRemoteFileCopy(false);
+    if (client == NULL) {
+        FinishRemoteFileCopy(FileCopyFinishReason_Disconnected);
+        return;
+    }
+    if (fileSize <= offset) {
+        FinishRemoteFileCopy(FileCopyFinishReason_ProtocolFailed);
         return;
     }
 
@@ -2058,7 +2179,7 @@ void ClipboardManager::RequestCurrentRemoteFileChunk() {
 
 void ClipboardManager::HandleFileContentsResponse(xstream_t* clipStream, int msgFlags, int msgLen) {
     if ((msgFlags & CB_RESPONSE_FAIL) != 0 || (msgFlags & CB_RESPONSE_OK) == 0 || msgLen < 4) {
-        FinishRemoteFileCopy(false);
+        FinishRemoteFileCopy(FileCopyFinishReason_ProtocolFailed);
         return;
     }
 
@@ -2083,7 +2204,7 @@ void ClipboardManager::HandleFileContentsResponse(xstream_t* clipStream, int msg
             [handle writeData:fileData];
         }
     } @catch (...) {
-        FinishRemoteFileCopy(false);
+        FinishRemoteFileCopy(FileCopyFinishReason_CreateFailed);
         return;
     }
 
@@ -2122,12 +2243,17 @@ void ClipboardManager::HandleFileContentsResponse(xstream_t* clipStream, int msg
     RequestCurrentRemoteFileChunk();
 }
 
-void ClipboardManager::FinishRemoteFileCopy(bool success) {
+void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     pthread_mutex_lock(&_lock);
-    bool cancelled = _fileCopyCancelled != 0;
+    if (_fileCopyCancelled != 0 && reason != FileCopyFinishReason_Success) {
+        reason = FileCopyFinishReason_Cancelled;
+    }
     NSFileHandle* handle = FileCopyCurrentHandle(_fileCopyCurrentHandle);
     NSString* incompletePath = FileCopyCurrentPath(_fileCopyCurrentPath);
     FileCopyWindow* window = FileCopyProgressWindow(_fileCopyWindow);
+    NSURL* destinationFolder = (_fileCopyDestinationFolder != NULL)
+        ? (__bridge NSURL*)_fileCopyDestinationFolder
+        : nil;
 
     if (handle != nil) {
         CFRetain((__bridge CFTypeRef)handle);
@@ -2138,12 +2264,16 @@ void ClipboardManager::FinishRemoteFileCopy(bool success) {
     if (window != nil) {
         CFRetain((__bridge CFTypeRef)window);
     }
+    if (destinationFolder != nil) {
+        CFRetain((__bridge CFTypeRef)destinationFolder);
+    }
 
     _fileCopyInProgress = 0;
     _fileCopyChoosingFolder = 0;
     _fileCopyCancelled = 0;
     _fileCopyExpectedStreamId = 0;
     _fileCopyCurrentItemIndex = 0;
+    _fileCopyItemTotal = 0;
     _fileCopyCurrentOffset = 0;
     _fileCopyTransferredBytes = 0;
 
@@ -2159,6 +2289,10 @@ void ClipboardManager::FinishRemoteFileCopy(bool success) {
         CFRelease(_fileCopyWindow);
         _fileCopyWindow = NULL;
     }
+    if (_fileCopyDestinationFolder != NULL) {
+        CFRelease(_fileCopyDestinationFolder);
+        _fileCopyDestinationFolder = NULL;
+    }
     pthread_mutex_unlock(&_lock);
 
     if (handle != nil) {
@@ -2167,17 +2301,21 @@ void ClipboardManager::FinishRemoteFileCopy(bool success) {
         } @catch (...) {
         }
     }
-    if (success == false && incompletePath != nil) {
+    if (reason != FileCopyFinishReason_Success && incompletePath != nil) {
         [[NSFileManager defaultManager] removeItemAtPath:incompletePath error:nil];
     }
 
+    FileCopyFinishReason finalReason = reason;
     dispatch_async(dispatch_get_main_queue(), ^{
         [window closeWindow];
-        if (success == false && cancelled == false) {
-            ShowFileCopyAlert(NSLocalizedString(@"filecopy.alert.failed", nil));
+        if (finalReason != FileCopyFinishReason_Cancelled) {
+            ShowFileCopyResult(finalReason, destinationFolder);
         }
         if (window != nil) {
             CFRelease((__bridge CFTypeRef)window);
+        }
+        if (destinationFolder != nil) {
+            CFRelease((__bridge CFTypeRef)destinationFolder);
         }
     });
 
@@ -2193,7 +2331,7 @@ void ClipboardManager::CancelRemoteFileCopy() {
     pthread_mutex_lock(&_lock);
     _fileCopyCancelled = 1;
     pthread_mutex_unlock(&_lock);
-    FinishRemoteFileCopy(false);
+    FinishRemoteFileCopy(FileCopyFinishReason_Cancelled);
 }
 
 bool ClipboardManager::PrepareRemoteFileDestinations(NSURL* folderUrl) {
@@ -2280,15 +2418,64 @@ void ClipboardManager::ShowFileCopyAlert(NSString* message) {
     });
 }
 
+NSString* ClipboardManager::LocalizedFileCopyReason(FileCopyFinishReason reason) {
+    switch (reason) {
+        case FileCopyFinishReason_Success:
+            return NSLocalizedString(@"filecopy.alert.success", nil);
+        case FileCopyFinishReason_Cancelled:
+            return NSLocalizedString(@"filecopy.alert.cancelled", nil);
+        case FileCopyFinishReason_Disconnected:
+            return NSLocalizedString(@"filecopy.alert.disconnected", nil);
+        case FileCopyFinishReason_NotWritable:
+            return NSLocalizedString(@"filecopy.alert.permission", nil);
+        case FileCopyFinishReason_CreateFailed:
+            return NSLocalizedString(@"filecopy.alert.create_failed", nil);
+        case FileCopyFinishReason_NoFiles:
+            return NSLocalizedString(@"filecopy.alert.no_files", nil);
+        case FileCopyFinishReason_Busy:
+            return NSLocalizedString(@"filecopy.alert.in_progress", nil);
+        case FileCopyFinishReason_ProtocolFailed:
+        default:
+            return NSLocalizedString(@"filecopy.alert.failed", nil);
+    }
+}
+
+void ClipboardManager::ShowFileCopyResult(FileCopyFinishReason reason, NSURL* destinationFolder) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSAlert* alert = [[NSAlert alloc] init];
+        [alert setMessageText:NSLocalizedString(@"filecopy.alert.title", nil)];
+        [alert setInformativeText:LocalizedFileCopyReason(reason)];
+
+        if (reason == FileCopyFinishReason_Success && destinationFolder != nil) {
+            [alert addButtonWithTitle:NSLocalizedString(@"filecopy.alert.show_in_finder", nil)];
+            [alert addButtonWithTitle:NSLocalizedString(@"permission.button.ok", nil)];
+            NSModalResponse response = [alert runModal];
+            if (response == NSAlertFirstButtonReturn) {
+                [[NSWorkspace sharedWorkspace] openURL:destinationFolder];
+            }
+            return;
+        }
+
+        [alert addButtonWithTitle:NSLocalizedString(@"permission.button.ok", nil)];
+        [alert runModal];
+    });
+}
+
 void ClipboardManager::UpdateFileCopyWindow(NSString* fileName) {
     pthread_mutex_lock(&_lock);
     FileCopyWindow* window = FileCopyProgressWindow(_fileCopyWindow);
     uint64_t transferred = _fileCopyTransferredBytes;
     uint64_t total = _fileCopyTotalBytes;
+    int itemIndex = _fileCopyCurrentItemIndex;
+    int itemTotal = _fileCopyItemTotal;
     pthread_mutex_unlock(&_lock);
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        [window updateFileName:fileName transferredBytes:transferred totalBytes:total];
+        [window updateFileName:fileName
+                     itemIndex:itemIndex + 1
+                     itemTotal:itemTotal
+              transferredBytes:transferred
+                    totalBytes:total];
     });
 }
 

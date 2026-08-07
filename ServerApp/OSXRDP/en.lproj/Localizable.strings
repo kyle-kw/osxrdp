@@ -1,7 +1,11 @@
 "statusbar.icon.accessibility" = "OSXRDP menu logo";
 "statusbar.menu.title" = "OSXRDP";
 "statusbar.menu.open" = "Open";
-"statusbar.menu.save_copied_files" = "Save Copied Files...";
+"statusbar.menu.status" = "Connection Status...";
+"statusbar.menu.save_copied_files" = "Save Copied Files to Folder...";
+"statusbar.menu.save_copied_files_count" = "Save %d Copied Files to Folder...";
+"statusbar.menu.save_to_downloads" = "Save Copied Files to Downloads";
+"statusbar.menu.save_to_downloads_count" = "Save %d Files to Downloads";
 "statusbar.menu.close" = "Close";
 "statusbar.quit.confirm.title" = "Are you sure you want to quit?";
 "statusbar.quit.confirm.message" = "Active remote connections will be disconnected.";
@@ -21,9 +25,30 @@
 "permission.button.refresh" = "Refresh";
 "permission.button.ok" = "OK";
 
+"diag.button.check_status" = "Check Status";
+"diag.button.open_permissions" = "Open Permissions";
+"diag.alert.title" = "Connection Status";
+"diag.label.accessibility" = "Accessibility: %@";
+"diag.label.screen_record" = "Screen Recording: %@";
+"diag.label.agent" = "Remote agent: %@";
+"diag.label.session" = "RDP session: %@";
+"diag.value.ok" = "OK";
+"diag.value.missing" = "Missing";
+"diag.value.running" = "Running";
+"diag.value.stopped" = "Stopped";
+"diag.value.connected" = "Connected";
+"diag.value.idle" = "Idle";
+"diag.hint.permissions" = "Grant Accessibility and Screen Recording, then restart the app if needed.";
+"diag.hint.agent_stopped" = "Remote agent is stopped. Click the status button to start it.";
+"diag.hint.ready" = "Ready for RDP clients. Connect with your macOS account.";
+"diag.hint.connected" = "An RDP client is connected.";
+"diag.error.missing_permissions" = "Cannot start: required permissions are missing.";
+"diag.error.agent_start_failed" = "Cannot start remote agent. Check permissions and try again.";
+
 "filecopy.window.title" = "Copying Files";
 "filecopy.button.cancel" = "Cancel";
 "filecopy.status.bytes" = "%llu of %llu bytes";
+"filecopy.status.item" = "(%d/%d) %@";
 "filecopy.panel.title" = "Save copied files";
 "filecopy.panel.message" = "Choose a folder to save the files copied from the remote computer.";
 "filecopy.panel.button" = "Save";
@@ -32,3 +57,10 @@
 "filecopy.alert.in_progress" = "A file copy is already in progress.";
 "filecopy.alert.permission" = "You do not have permission to write to the selected folder.";
 "filecopy.alert.failed" = "File copy failed.";
+"filecopy.alert.create_failed" = "Could not create the destination file or folder.";
+"filecopy.alert.disconnected" = "File copy stopped because the remote session disconnected.";
+"filecopy.alert.cancelled" = "File copy was cancelled.";
+"filecopy.alert.success" = "Files were saved successfully.";
+"filecopy.alert.show_in_finder" = "Show in Finder";
+"filecopy.notify.title" = "OSXRDP";
+"filecopy.notify.body" = "%ld file(s) from the remote client are ready to save.";

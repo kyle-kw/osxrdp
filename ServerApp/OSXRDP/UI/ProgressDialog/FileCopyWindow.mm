@@ -38,8 +38,18 @@
     [NSApp activateIgnoringOtherApps:YES];
 }
 
-- (void)updateFileName:(NSString *)fileName transferredBytes:(unsigned long long)transferredBytes totalBytes:(unsigned long long)totalBytes {
+- (void)updateFileName:(NSString *)fileName
+             itemIndex:(int)itemIndex
+             itemTotal:(int)itemTotal
+      transferredBytes:(unsigned long long)transferredBytes
+            totalBytes:(unsigned long long)totalBytes {
     NSString* name = fileName != nil ? fileName : @"";
+    if (itemTotal > 0) {
+        name = [NSString stringWithFormat:NSLocalizedString(@"filecopy.status.item", nil),
+                         itemIndex > 0 ? itemIndex : 1,
+                         itemTotal,
+                         name];
+    }
     [self.fileNameLabel setStringValue:name];
 
     double progress = 0.0;

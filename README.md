@@ -30,6 +30,15 @@ osxrdp is an unofficial module of xrdp to support rdp server in macOS.
 macOS 12.4 or higher version.\
 Support Apple Silicon & Intel mac.
 
+## Unit tests
+On macOS (Xcode CLI tools):
+
+```bash
+bash tests/run_unit_tests.sh
+```
+
+GitHub Actions runs this suite **before** the unsigned package build.
+
 ## Etc
 osxrdp is compatible with original xrdp v0.10.6.1 version. (no modificated)
 

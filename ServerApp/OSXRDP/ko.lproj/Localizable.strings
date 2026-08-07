@@ -1,7 +1,11 @@
 "statusbar.icon.accessibility" = "OSXRDP 메뉴 로고";
 "statusbar.menu.title" = "OSXRDP";
 "statusbar.menu.open" = "열기";
-"statusbar.menu.save_copied_files" = "복사한 파일 저장...";
+"statusbar.menu.status" = "연결 상태...";
+"statusbar.menu.save_copied_files" = "복사한 파일을 폴더에 저장...";
+"statusbar.menu.save_copied_files_count" = "복사한 파일 %d개를 폴더에 저장...";
+"statusbar.menu.save_to_downloads" = "다운로드에 저장";
+"statusbar.menu.save_to_downloads_count" = "파일 %d개를 다운로드에 저장";
 "statusbar.menu.close" = "닫기";
 "statusbar.quit.confirm.title" = "정말로 종료하시겠습니까?";
 "statusbar.quit.confirm.message" = "연결중인 원격 접속이 중단됩니다.";
@@ -21,9 +25,30 @@
 "permission.button.refresh" = "새로 고침";
 "permission.button.ok" = "확인";
 
+"diag.button.check_status" = "상태 확인";
+"diag.button.open_permissions" = "권한 열기";
+"diag.alert.title" = "연결 상태";
+"diag.label.accessibility" = "손쉬운 사용: %@";
+"diag.label.screen_record" = "화면 기록: %@";
+"diag.label.agent" = "원격 에이전트: %@";
+"diag.label.session" = "RDP 세션: %@";
+"diag.value.ok" = "정상";
+"diag.value.missing" = "없음";
+"diag.value.running" = "실행 중";
+"diag.value.stopped" = "중지됨";
+"diag.value.connected" = "연결됨";
+"diag.value.idle" = "대기";
+"diag.hint.permissions" = "손쉬운 사용과 화면 기록 권한을 허용한 뒤, 필요하면 앱을 재시작하세요.";
+"diag.hint.agent_stopped" = "원격 에이전트가 중지되었습니다. 상태 버튼을 눌러 시작하세요.";
+"diag.hint.ready" = "RDP 클라이언트 연결 준비 완료. macOS 계정으로 접속하세요.";
+"diag.hint.connected" = "RDP 클라이언트가 연결되어 있습니다.";
+"diag.error.missing_permissions" = "시작할 수 없습니다: 필수 권한이 없습니다.";
+"diag.error.agent_start_failed" = "원격 에이전트를 시작할 수 없습니다. 권한을 확인한 뒤 다시 시도하세요.";
+
 "filecopy.window.title" = "파일 복사 중";
 "filecopy.button.cancel" = "취소";
 "filecopy.status.bytes" = "%llu / %llu 바이트";
+"filecopy.status.item" = "(%d/%d) %@";
 "filecopy.panel.title" = "복사한 파일 저장";
 "filecopy.panel.message" = "원격 컴퓨터에서 복사한 파일을 저장할 폴더를 선택해 주세요.";
 "filecopy.panel.button" = "저장";
@@ -32,3 +57,10 @@
 "filecopy.alert.in_progress" = "파일 복사가 이미 진행 중입니다.";
 "filecopy.alert.permission" = "선택한 폴더에 쓸 권한이 없습니다.";
 "filecopy.alert.failed" = "파일 복사에 실패했습니다.";
+"filecopy.alert.create_failed" = "대상 파일 또는 폴더를 만들 수 없습니다.";
+"filecopy.alert.disconnected" = "원격 세션이 끊어져 파일 복사가 중단되었습니다.";
+"filecopy.alert.cancelled" = "파일 복사가 취소되었습니다.";
+"filecopy.alert.success" = "파일이 성공적으로 저장되었습니다.";
+"filecopy.alert.show_in_finder" = "Finder에서 보기";
+"filecopy.notify.title" = "OSXRDP";
+"filecopy.notify.body" = "원격 클라이언트의 파일 %ld개를 저장할 수 있습니다.";

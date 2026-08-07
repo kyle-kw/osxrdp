@@ -47,10 +47,14 @@ Starting from **osxrdp 2.0.0**, osxrdp supports file and folder copy between the
 - **Copying files from the client, such as mstsc, to the server (macOS)**:  
   Follow these steps:
   1. On the client computer, select the files or folders and copy them with **Ctrl + C**.
-  2. On the server (macOS), select the OSXRDP app from the top menu bar.
-  3. Select **Save copied files**.<img width="1366" height="800" alt="1" src="https://github.com/user-attachments/assets/f27486dc-464f-4ec9-86e5-8198e2ba1e77" />
-  4. Select the folder path where the files will be saved.<img width="1366" height="800" alt="2" src="https://github.com/user-attachments/assets/c4c9c62a-7d47-4e45-86db-ef37a9d4d6d1" />
-  5. You can confirm that the files or folders have been copied as follows.<img width="1366" height="800" alt="3" src="https://github.com/user-attachments/assets/988a260f-7656-4c58-aa1d-b0c0e869e1ac" />
+  2. On the server (macOS), open the OSXRDP menu from the menu bar (a notification may appear when files are ready).
+  3. Choose **Save … to Downloads** for a one-click save, or **Save … to Folder…** to pick a destination.
+  4. Wait for the progress window. On success you can choose **Show in Finder**.
+
+## Connection status
+
+The main window shows Accessibility, Screen Recording, remote agent, and RDP session status.  
+If permissions are missing at launch, the permission sheet opens automatically. Use **Check Status** for a short diagnostic summary. The menu-bar icon is green when healthy, orange when permissions are missing, and red when the agent is stopped.
 
 ## Other
 * For the best stability, it is recommended that the remote Mac be connected to a wired network.\

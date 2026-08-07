@@ -24,7 +24,22 @@
     [self.restartAppBtn setTitle:NSLocalizedString(@"permission.button.restart_app", nil)];
     [self.closeBtn setTitle:NSLocalizedString(@"permission.button.close", nil)];
 
+    self.window.delegate = self;
     [self checkPermStatus];
+
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(checkPermStatus)
+                                                 name:NSApplicationDidBecomeActiveNotification
+                                               object:nil];
+}
+
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+    [self checkPermStatus];
+    (void)notification;
 }
 
 - (void)checkPermStatus {

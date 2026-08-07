@@ -3,7 +3,7 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@interface PermissionSettingsWindow : NSWindowController
+@interface PermissionSettingsWindow : NSWindowController <NSWindowDelegate>
 
 @end
 
