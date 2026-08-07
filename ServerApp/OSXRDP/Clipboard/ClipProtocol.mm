@@ -12,34 +12,41 @@ bool ClipProtocol_IsSafeRelativePath(const char* path) {
     }
 
     // Check for Windows drive letter (e.g. "C:\")
-    if (strlen(path) >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
+    size_t pathLen = strlen(path);
+    if (pathLen >= 3 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')) {
         return false;
     }
 
     // Reject oversized paths (avoid silent truncation of a malicious prefix).
-    size_t pathLen = strlen(path);
     if (pathLen >= 1024) {
         return false;
     }
 
-    // Split on both / and \ to check each component
-    char buf[1024];
-    memcpy(buf, path, pathLen + 1);
-
-    char* saveptr = NULL;
-    char* component = strtok_r(buf, "/\\", &saveptr);
-    while (component != NULL) {
-        if (component[0] == '\0') {
-            // Empty component (e.g. "foo//bar" or trailing "/")
+    // Walk components manually. strtok_r skips empty segments, so it would
+    // accept "foo/", "foo//bar", and trailing separators — reject those here.
+    const char* p = path;
+    int componentCount = 0;
+    while (*p != '\0') {
+        const char* start = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') {
+            p++;
+        }
+        size_t len = (size_t)(p - start);
+        if (len == 0) {
+            // Empty component: leading (already blocked), trailing, or "//"
             return false;
         }
-        if (strcmp(component, ".") == 0 || strcmp(component, "..") == 0) {
+        if ((len == 1 && start[0] == '.') ||
+            (len == 2 && start[0] == '.' && start[1] == '.')) {
             return false;
         }
-        component = strtok_r(NULL, "/\\", &saveptr);
+        componentCount++;
+        if (*p == '/' || *p == '\\') {
+            p++; // consume separator; next loop detects trailing/empty
+        }
     }
 
-    return true;
+    return componentCount > 0;
 }
 
 void ClipProtocol_WriteUInt64ToBuffer(unsigned char* buffer, uint64_t value) {

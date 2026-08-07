@@ -33,6 +33,12 @@ TEST_CASE(test_safe_path_rejects_empty) {
 TEST_CASE(test_safe_path_rejects_trailing_slash) {
     EXPECT_TRUE(ClipProtocol_IsSafeRelativePath("foo/") == false);
     EXPECT_TRUE(ClipProtocol_IsSafeRelativePath("foo/bar/") == false);
+    EXPECT_TRUE(ClipProtocol_IsSafeRelativePath("foo\\") == false);
+}
+
+TEST_CASE(test_safe_path_rejects_empty_component) {
+    EXPECT_TRUE(ClipProtocol_IsSafeRelativePath("foo//bar") == false);
+    EXPECT_TRUE(ClipProtocol_IsSafeRelativePath("foo\\\\bar") == false);
 }
 
 TEST_CASE(test_safe_path_rejects_backslash_absolute) {
@@ -110,6 +116,7 @@ int main(void) {
     RUN_TEST(test_safe_path_rejects_dot);
     RUN_TEST(test_safe_path_rejects_empty);
     RUN_TEST(test_safe_path_rejects_trailing_slash);
+    RUN_TEST(test_safe_path_rejects_empty_component);
     RUN_TEST(test_safe_path_rejects_backslash_absolute);
     RUN_TEST(test_safe_path_rejects_windows_drive);
     RUN_TEST(test_safe_path_accepts_backslash_relative);

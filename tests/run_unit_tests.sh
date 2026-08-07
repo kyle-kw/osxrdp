@@ -80,7 +80,28 @@ build_and_run_cxx() {
   shift
   echo ""
   echo "-- building $name (C++) --"
-  if ! "$CXX" "${CXXFLAGS[@]}" "$@" -o "$OUT/$name"; then
+  # Compile .c sources as C (void* arithmetic is invalid in C++ mode).
+  local cxx_srcs=()
+  local c_objs=()
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      *.c)
+        local base
+        base="$(basename "$arg" .c)"
+        if ! "$CC" "${CFLAGS[@]}" -c "$arg" -o "$OUT/${name}_${base}.o"; then
+          echo "FAIL compile $name ($arg as C)"
+          failures=$((failures + 1))
+          return
+        fi
+        c_objs+=("$OUT/${name}_${base}.o")
+        ;;
+      *)
+        cxx_srcs+=("$arg")
+        ;;
+    esac
+  done
+  if ! "$CXX" "${CXXFLAGS[@]}" "${cxx_srcs[@]}" "${c_objs[@]}" -o "$OUT/$name"; then
     echo "FAIL compile $name"
     failures=$((failures + 1))
     return
