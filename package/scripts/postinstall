@@ -1,7 +1,11 @@
 #!/bin/bash
+set -e
+
+APP_MACOS="/Applications/osxrdp/OSXRDP.app/Contents/MacOS"
+APP_BUNDLE="/Applications/osxrdp/OSXRDP.app"
 
 # generate key (classic rdp)
-/Applications/osxrdp/OSXRDP.app/Contents/MacOS/xrdp-keygen xrdp auto
+"$APP_MACOS/xrdp-keygen" xrdp auto
 
 # generate tls key
 /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes \
@@ -18,10 +22,38 @@ touch /var/log/xrdp.log
 mkdir -p /Library/Logs/osxrdp
 chmod 755 /Library/Logs/osxrdp
 
-# From macOS 27 db3?, launchd refuses to run quarantined plists, so remove quarantine attribute
-xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null
-xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist 2>/dev/null
-xattr -d com.apple.quarantine /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null
+# Drop stale IPC sockets from a previous install (otherwise clients connect to a dead node).
+rm -f /tmp/osxrdpsessionmanager
+
+# From macOS 13+, launchd refuses to run quarantined plists, so remove quarantine attribute
+xattr -dr com.apple.quarantine /Applications/osxrdp 2>/dev/null || true
+xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null || true
+xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist 2>/dev/null || true
+xattr -d com.apple.quarantine /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null || true
+
+# Ensure nested helpers keep distinct code-signing identifiers.
+# (A prior --deep re-sign of the .app can overwrite them with the GUI app id, which
+# triggers Launch Constraint Violation on the sessionmanager LaunchDaemon.)
+if [[ -x "$APP_MACOS/xrdp" ]]; then
+  codesign --force --sign - -i xrdp "$APP_MACOS/xrdp" || true
+fi
+if [[ -x "$APP_MACOS/xrdp-keygen" ]]; then
+  codesign --force --sign - -i xrdp-keygen "$APP_MACOS/xrdp-keygen" || true
+fi
+if [[ -x "$APP_MACOS/osxrdp_sessionmanager" ]]; then
+  codesign --force --sign - -i com.byungho.osxrdp.sessionmanager "$APP_MACOS/osxrdp_sessionmanager" || true
+fi
+if [[ -x "$APP_MACOS/OSXRDP" ]]; then
+  codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_MACOS/OSXRDP" || true
+fi
+# Seal bundle without --deep so nested identifiers stay intact.
+if [[ -d "$APP_BUNDLE" ]]; then
+  codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_BUNDLE" || true
+fi
+
+# Tear down old jobs first so LWCR / BTM state is refreshed for new code signatures.
+launchctl bootout system/com.byungho.osxrdp 2>/dev/null || true
+launchctl bootout system/com.byungho.osxrdp.sessionmanager 2>/dev/null || true
 
 # start service
 launchctl bootstrap system /Library/LaunchDaemons/com.byungho.osxrdp.plist
@@ -32,4 +64,6 @@ launchctl bootstrap system /Library/LaunchDaemons/com.byungho.osxrdp.sessionmana
 launchctl enable system/com.byungho.osxrdp.sessionmanager
 launchctl kickstart -k system/com.byungho.osxrdp.sessionmanager
 
-launchctl load /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist
+launchctl bootstrap gui/$(id -u) /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null \
+  || launchctl load /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null \
+  || true

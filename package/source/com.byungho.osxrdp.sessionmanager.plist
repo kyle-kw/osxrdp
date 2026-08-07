@@ -14,5 +14,8 @@
 	<true/>
 	<key>ThrottleInterval</key>
 	<integer>20</integer>
+	<!-- Match xrdp daemon: Interactive reduces Launch Constraint thrash on ad-hoc builds. -->
+	<key>ProcessType</key>
+	<string>Interactive</string>
 </dict>
 </plist>

@@ -15,6 +15,15 @@ xcuserdata/
 /*.gcno
 **/xcshareddata/WorkspaceSettings.xcsettings
 
+## Local / CI build artifacts (xcodebuild may drop these in-tree)
+XCBuildData/
+**/XCBuildData/
+DerivedData/
+build/
+**/build/
+*.o
+*.a
+!extern_lib/**/*.a
 
 ## App packaging
 *.pkg

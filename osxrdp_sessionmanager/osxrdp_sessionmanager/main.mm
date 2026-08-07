@@ -19,12 +19,10 @@ int main(int argc, const char * argv[]) {
     // All files under /Library/Logs disappear on OS update.... what?
     mkdir("/Library/Logs/osxrdp", 0755);
     
-    // initialize log
+    // initialize log (non-fatal: still run so IPC stays available if log path is broken)
     int re = dzlog_init(_LOG_CONFIG_PATH, "osxrdp_sessionmanager");
     if (re != 0) {
-        NSLog(@"[osxrdp_sessionmanager] could not initialize log. %s", _LOG_CONFIG_PATH);
-        
-        return 1;
+        NSLog(@"[osxrdp_sessionmanager] could not initialize log. %s (continuing without file log)", _LOG_CONFIG_PATH);
     }
     
     // check is root process

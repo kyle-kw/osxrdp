@@ -117,12 +117,24 @@ resign_osxrdp_app() {
     resign_binary "$macos/OSXRDP" "com.byungho.osxrdp.mainapp"
   fi
 
-  # Bundle seal last.
-  do_codesign --deep -i "com.byungho.osxrdp.mainapp" "$app"
+  # Seal the .app last WITHOUT --deep.
+  # --deep -i <id> re-signs nested Mach-Os with the same identifier and overwrites
+  # xrdp / sessionmanager ids (breaks IPC trust and can trigger Launch Constraint
+  # Violation when a LaunchDaemon binary claims the GUI app's identity).
+  do_codesign -i "com.byungho.osxrdp.mainapp" "$app"
 
   echo "--- codesign verify ---"
   codesign -dv --verbose=2 "$macos/xrdp" 2>&1 | egrep 'Identifier|TeamIdentifier|Signature' || true
+  codesign -dv --verbose=2 "$macos/osxrdp_sessionmanager" 2>&1 | egrep 'Identifier|TeamIdentifier|Signature' || true
   codesign --verify --verbose=2 "$app" 2>&1 || true
+
+  # Guard: xrdp must keep identifier exactly "xrdp".
+  local xrdp_id
+  xrdp_id="$(codesign -dv "$macos/xrdp" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')"
+  if [[ "$xrdp_id" != "xrdp" ]]; then
+    echo "ERROR: xrdp Identifier is '$xrdp_id' (expected 'xrdp')"
+    return 1
+  fi
 }
 
 mkdir -p "$SYMROOT" "$OBJROOT" osxup/Log package/source/module
