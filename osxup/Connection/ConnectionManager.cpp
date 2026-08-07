@@ -29,6 +29,7 @@ inline long long NowMs() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
+} // namespace
 
 ConnectionManager::ConnectionManager() :
     _inited(false),
