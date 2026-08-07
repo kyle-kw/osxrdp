@@ -113,12 +113,12 @@ bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
 
         if ([impl start] == NO) {
             for (int j = 0; j < _recorderCnt; j++) {
-                id r = (__bridge_transfer id)_recorder[j];
+                id<IScreenRecorder> r = (__bridge_transfer id<IScreenRecorder>)_recorder[j];
                 [r stop];
                 r = nil;
+                _recorder[j] = NULL;
             }
             _recorderCnt = 0;
-            memset(_recorder, 0, sizeof(_recorder));
             DestroyRecordShm();
             DestroyCursorShm();
             return false;
