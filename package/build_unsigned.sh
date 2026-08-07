@@ -171,4 +171,3 @@ fi
 echo "=== Done ==="
 echo "Package: $ROOT/package/$OUTPUT_PKG"
 ls -lh "$ROOT/package/$OUTPUT_PKG"
-)
