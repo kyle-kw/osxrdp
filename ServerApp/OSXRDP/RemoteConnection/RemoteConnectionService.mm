@@ -11,6 +11,11 @@ bool StartRemoteConnectionServerService(void) {
 
     g_server = new MirrorAppServer();
     g_server->Start();
+    if (!g_server->IsRunning()) {
+        delete g_server;
+        g_server = nullptr;
+        return false;
+    }
 
     return true;
 }
@@ -26,7 +31,7 @@ void StopRemoteConnectionServerService(void) {
 }
 
 bool IsRemoteConnectionServerServiceRunning(void) {
-    return g_server != nullptr;
+    return g_server != nullptr && g_server->IsRunning();
 }
 
 bool HasRemoteClipboardFiles(void) {

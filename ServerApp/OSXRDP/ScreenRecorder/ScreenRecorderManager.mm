@@ -112,6 +112,13 @@ bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
                     RecordCmdCallback:HandleRecordCommand RecordCmdCallbackUserData:this];
 
         if ([impl start] == NO) {
+            for (int j = 0; j < _recorderCnt; j++) {
+                id r = (__bridge_transfer id)_recorder[j];
+                [r stop];
+                r = nil;
+            }
+            _recorderCnt = 0;
+            memset(_recorder, 0, sizeof(_recorder));
             DestroyRecordShm();
             DestroyCursorShm();
             return false;
@@ -151,7 +158,7 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
         requestedMonitorInfo[i].outputIndex = i;
     }
 
-    // 잠금화면의 경우 virtual monitor 를 지원하지 않음.
+    // Lock screen does not support virtual monitor.
     if (is_root_process() != 0) {
         params->useVirtualMon = 0;
         params->framerate = 30;
@@ -209,6 +216,7 @@ bool ScreenRecorderManager::PrepareRecordResources() {
     for (int i = 0; i < _recordParams.monitorCount; i++) {
         if (CreateRecordShm(i) == false) {
             NSLog(@"[ScreenRecorderManager::StartRecord] could not create record shm");
+            DestroyRecordShm();
             return false;
         }
     }
@@ -219,7 +227,7 @@ bool ScreenRecorderManager::PrepareRecordResources() {
         return false;
     }
 
-    // 세션 시작 시 canonical 은 반드시 무효화 (이전 세션 잔상 방지)
+    // Invalidate canonical buffer at session start (prevents stale data from previous session)
     InvalidateRFXCanonical();
     ResetPendingDirty();
 
@@ -260,7 +268,7 @@ bool ScreenRecorderManager::ResolveDisplayForRecorder() {
     }
 
     for (int i = 0; i < _recordParams.monitorCount; i++) {
-        // todo : 성공,실패 판별
+        // todo: determine success/failure
 
         int monitorWidth = GetMonitorRecordWidth(i);
         int monitorHeight = GetMonitorRecordHeight(i);
@@ -294,8 +302,8 @@ int ScreenRecorderManager::GetMonitorRecordWidth(int recordIdx) {
     
     int width = _recordParams.monitorInfo[recordIdx].right - _recordParams.monitorInfo[recordIdx].left;
     
-    // xrdp 의 실제 monitor rect 는 right/bottom inclusive 이다.
-    // osxup 이 단일 모니터용으로 보낸 synthetic rect(right=width)는 그대로 둔다.
+    // xrdp's actual monitor rect has right/bottom as inclusive.
+    // The synthetic rect sent by osxup for single-monitor (right=width) is kept as-is.
     if (!(_recordParams.monitorCount == 1 &&
           _recordParams.monitorInfo[recordIdx].left == 0 &&
           _recordParams.monitorInfo[recordIdx].right == _recordParams.width)) {
@@ -312,8 +320,8 @@ int ScreenRecorderManager::GetMonitorRecordHeight(int recordIdx) {
     
     int height = _recordParams.monitorInfo[recordIdx].bottom - _recordParams.monitorInfo[recordIdx].top;
     
-    // xrdp 의 실제 monitor rect 는 right/bottom inclusive 이다.
-    // osxup 이 단일 모니터용으로 보낸 synthetic rect(bottom=height)는 그대로 둔다.
+    // xrdp's actual monitor rect has right/bottom as inclusive.
+    // The synthetic rect sent by osxup for single-monitor (bottom=height) is kept as-is.
     if (!(_recordParams.monitorCount == 1 &&
           _recordParams.monitorInfo[recordIdx].top == 0 &&
           _recordParams.monitorInfo[recordIdx].bottom == _recordParams.height)) {
@@ -333,8 +341,16 @@ bool ScreenRecorderManager::CreateRecordShm(int recordIdx) {
     const int width = GetMonitorRecordWidth(recordIdx);
     const int height = GetMonitorRecordHeight(recordIdx);
 
-    // todo : format 마다 정확한 크기 설정하기
-    int rawDataSize = width * height * 5 + (sizeof(size_t) * 2);
+    size_t rawDataSize;
+    if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_RFX) {
+        size_t tileCols = ((size_t)width + 63) / 64;
+        size_t tileRows = ((size_t)height + 63) / 64;
+        size_t tileTotal = tileCols * tileRows;
+        rawDataSize = sizeof(size_t) + sizeof(int) + sizeof(int) * tileTotal + OSXRDP_RFX_TILE_BYTES * tileTotal;
+    }
+    else {
+        rawDataSize = (size_t)width * (size_t)height * 5 + (sizeof(size_t) * 2);
+    }
     
     char shm_name[512];
     if (get_object_name_by_sessionid("/osxrdpshm", shm_name, 512, is_root_process()) == 0) {
@@ -415,14 +431,14 @@ void ScreenRecorderManager::DestroyCursorShm() {
 }
 
 void ScreenRecorderManager::Stop() {
-    // 화면 녹화를 먼저 정지
+    // Stop screen recording first
     for (int i = 0; i < _recorderCnt; i++) {
         id<IScreenRecorder> impl = (__bridge id<IScreenRecorder>)_recorder[i];
         if ([impl stop] == NO) {
-            // 정지 실패 (간혹 빠르게 호출하면 이럼)
+            // Stop failed (sometimes happens when called too quickly)
             sleep(1);
             
-            // 재시도
+            // retry
             [impl stop];
         }
         
@@ -438,7 +454,7 @@ void ScreenRecorderManager::Stop() {
     
     _virtualMonitor.Destroy();
 
-    // 공유 메모리 정리
+    // cleanup shared memory
     DestroyRecordShm();
     DestroyCursorShm();
 
@@ -500,8 +516,8 @@ void ScreenRecorderManager::SendDisconnectMsgToClient() {
         int packetType;
     };
     
-    // 가상 모니터를 먼저 파괴 (todo : 정확한 정리 타이밍을 다시 정하기)
-    // 2개 이상의 클라이언트가 겹치면 충돌나서 원본 물리 화면이 안나오는 경우가 발생.
+    // Destroy virtual monitor first (todo: reconsider exact cleanup timing)
+    // Overlapping 2+ clients can conflict and cause the physical display to not show.
     //_virtualMonitor.Destroy();
     
     struct stop_msg msg = { OSXRDP_CMDTYPE_MSGFROMAGENT, OSXRDP_PACKETTYPE_TERMINATE };
@@ -527,7 +543,7 @@ bool ScreenRecorderManager::AcquireFrameSlot(screenrecord_shm_t** recordInfoOut,
     unsigned int readPos = atomic_load_explicit(&recordInfo->read_pos, memory_order_acquire);
     unsigned int writePos = atomic_load_explicit(&recordInfo->write_pos, memory_order_relaxed);
 
-    // 아직 소비하지 못한 데이터가 너무 많은 경우 버리기 (drop)
+    // Drop if too much unconsumed data
     if (writePos - readPos >= FRAME_SLOTS) {
         return false;
     }
@@ -917,7 +933,7 @@ void ScreenRecorderManager::HandleRFXRecordData(void* pixelBuffer, const CGRect*
         return;
     }
 
-    // osxup 가 full redraw 가 필요하다는 요청을 할 경우 이번 프레임은 강제로 full redraw 하도록 설정
+    // If osxup requests full redraw, force full redraw for this frame
     int wantFull = atomic_exchange_explicit(&recordInfo->consumer_request_full, 0, memory_order_acquire);
     if (wantFull != 0) {
         recorder->InvalidateRFXCanonical();
@@ -967,9 +983,9 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
         return false;
     }
 
-    // dirty rect 정보는 current_frame 에 계속 기록한다.
-    // (consumer 의 RFX 경로에서는 slot 안의 indices 를 사용하므로 이 dirtys 는 직접 쓰이지
-    //  않지만, 다른 포맷과의 일관성 / 디버그 편의를 위해 유지한다.)
+    // Dirty rect info is continuously recorded in current_frame.
+    // (The consumer's RFX path uses slot indices, so these dirtys are not directly used
+    //  but kept for consistency with other formats and debug convenience.)
     PopulateDirtyRectsFromArray(dirtyRects, dirtyRectsCnt, (int)width, (int)height, current_frame);
     ApplyPendingDirty(displayIdx, current_frame);
 
@@ -980,13 +996,13 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
         return false;
     }
 
-    // full redraw 가 필요한지 판별
+    // Determine if full redraw is needed
     bool doFullRedraw = _rfxFullRedrawRequired;
     if (!doFullRedraw && current_frame->dirtyCount <= 0) {
         doFullRedraw = true;
     }
 
-    // dirty tile bitmap 구성
+    // Build dirty tile bitmap
     const size_t maskSize = (tileTotal + 7) / 8;
     uint8_t  stackMask[2048];
     uint8_t* mask = (maskSize <= sizeof(stackMask)) ? stackMask : (uint8_t*)malloc(maskSize);
@@ -1033,14 +1049,14 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
 
     if (doFullRedraw) {
         memset(mask, 0xFF, maskSize);
-        // tileTotal 이 8 의 배수가 아닐 때 초과 비트 클리어
+        // Clear excess bits when tileTotal is not a multiple of 8
         const size_t excessBits = (maskSize * 8) - tileTotal;
         if (excessBits > 0) {
             mask[maskSize - 1] = (uint8_t)(0xFFu >> excessBits);
         }
     }
 
-    // tile 변환 (BGRA -> YUV444 planar)
+    // Tile conversion (BGRA -> YUV444 planar)
     uint8_t* canonical = _rfxCanonical;
     const uint8_t* bgraBase = srcBase;
     const size_t bgraStride = srcStride;
@@ -1088,7 +1104,7 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
 
     *slotCountPtr = slotTileCount;
 
-    // canonical → slot tileData 복사
+    // Copy canonical -> slot tileData
     uint8_t* slotTileData = (uint8_t*)(slotIndices + slotTileCount);
     for (int i = 0; i < slotTileCount; ++i) {
         const int idx = slotIndices[i];
@@ -1155,7 +1171,7 @@ bool ScreenRecorderManager::EnsureRFXCanonical(int width, int height) {
 
             memset(aPlane, 0xFF, 4096);
 
-            // 모서리 타일의 무효 영역 U/V 를 중립값 128 로 고정 (Y 는 이미 0)
+            // Set U/V of invalid regions in edge tiles to neutral value 128 (Y is already 0)
             if (validWidth < 64) {
                 const int stripW = 64 - validWidth;
                 for (int py = 0; py < validHeight; ++py) {
@@ -1201,11 +1217,11 @@ bool ScreenRecorderManager::ConvertRFXTile(const uint8_t* bgraBase, size_t bgraS
         return false;
     }
 
-    // RemoteFX 는 MS-RDPRFX 3.1.8.1.3 규격에 따라 BT.601 "full-range" (JFIF) 계수를 요구한다.
+    // RemoteFX requires BT.601 "full-range" (JFIF) coefficients per MS-RDPRFX 3.1.8.1.3.
     //   Y  =  0.299 R + 0.587 G + 0.114 B
     //   Cb = -0.168736 R - 0.331264 G + 0.5 B + 128
     //   Cr =  0.5 R - 0.418688 G - 0.081312 B + 128
-    // 따라서 matrix 는 ITU_R_601_*, pixelRange 는 { Yp_bias=0, CbCr_bias=128, YpRangeMax=255, CbCrRangeMax=255, YpMax=255, YpMin=0, CbCrMax=255, CbCrMin=0 }.
+    // Therefore matrix is ITU_R_601_*, pixelRange is { Yp_bias=0, CbCr_bias=128, YpRangeMax=255, CbCrRangeMax=255, YpMax=255, YpMin=0, CbCrMax=255, CbCrMin=0 }.
     static dispatch_once_t onceToken;
     static vImage_ARGBToYpCbCr conversionInfo;
     static bool hasConversionInfo = false;
@@ -1224,7 +1240,7 @@ bool ScreenRecorderManager::ConvertRFXTile(const uint8_t* bgraBase, size_t bgraS
         return false;
     }
 
-    const uint8_t bgraPermuteMap[4] = { 3, 2, 1, 0 }; // BGRA -> ARGB 매핑용
+    const uint8_t bgraPermuteMap[4] = { 3, 2, 1, 0 }; // BGRA -> ARGB mapping
 
     vImage_Buffer srcBuffer = {
         (void*)(bgraBase + ((size_t)top * bgraStride) + ((size_t)left * 4)),
@@ -1241,7 +1257,7 @@ bool ScreenRecorderManager::ConvertRFXTile(const uint8_t* bgraBase, size_t bgraS
         (size_t)validWidth * 3
     };
 
-    // BGRA -> Packed CrYpCb (V, Y, U) -> Planar (Y/U/V 타일 다이렉트 쓰기)
+    // BGRA -> Packed CrYpCb (V, Y, U) -> Planar (direct Y/U/V tile write)
     vImage_Error err = vImageConvert_ARGB8888To444CrYpCb8(&srcBuffer, &packedBuffer, &conversionInfo, bgraPermuteMap, kvImageNoFlags);
     if (err != kvImageNoError) {
         return false;
@@ -1264,14 +1280,14 @@ inline void ScreenRecorderManager::ProcessDirtyArea(const CGRect* rect, int limX
     const int orgW = (int)rect->size.width;
     const int orgH = (int)rect->size.height;
 
-    // padding 추가 (이것이 없을 경우 화면 해상도가 1:1 이 아닌 경우 창의 끝부분 잔상이 남는 경우가 있음)
-    // 4:2:0 정렬
+    // Add padding (without this, trailing artifacts may appear when display aspect ratio is not 1:1)
+    // 4:2:0 alignment
     int x0 = (orgX - 4) & ~1;
     int y0 = (orgY - 4) & ~1;
     int x1 = (orgX + orgW + 5) & ~1;
     int y1 = (orgY + orgH + 5) & ~1;
 
-    // 정렬로 인해 넘어간 경우 방지
+    // Prevent overflow caused by alignment
     x0 = MAX(0, x0);
     y0 = MAX(0, y0);
     x1 = MIN(limX, x1);

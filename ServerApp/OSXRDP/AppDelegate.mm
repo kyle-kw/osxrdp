@@ -5,12 +5,12 @@
 
 #import "UI/Main/MainWindowController.h"
 
-void _handle_sigterm(int signal);
 
 @interface AppDelegate ()
 {
     NSStatusItem* _trayMenu;
     NSMenuItem* _saveCopiedFilesMenuItem;
+    dispatch_source_t _sigSource;
 }
 
 @property (strong) IBOutlet MainWindowController* mainWindowController;
@@ -22,7 +22,14 @@ void _handle_sigterm(int signal);
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
-    signal(SIGTERM, _handle_sigterm);
+    signal(SIGTERM, SIG_IGN);
+    _sigSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
+    dispatch_source_set_event_handler(_sigSource, ^{
+        NSLog(@"[OSXRDP] on sigterm");
+        StopRemoteConnectionServerService();
+        exit(0);
+    });
+    dispatch_resume(_sigSource);
 
     extern int g_Lockscreen;
     if (g_Lockscreen == 1) {
@@ -110,9 +117,5 @@ void _handle_sigterm(int signal);
     StartRemoteClipboardFileCopy();
 }
 
-void _handle_sigterm(int signal) {
-    NSLog(@"[OSXRDP] on sigterm");
-    StopRemoteConnectionServerService();
-}
 
 @end

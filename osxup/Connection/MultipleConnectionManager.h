@@ -12,7 +12,8 @@ public:
     ~MultipleConnectionManager();
     
     void AddConnection(struct mod* mod);
-    void RemoveConnection();
+    // Only clears the slot when the exiting mod still owns it.
+    void RemoveConnection(struct mod* mod);
     
 private:
     struct mod* _CurrentConnected;

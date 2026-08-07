@@ -4,7 +4,7 @@
 #include "osxrdp/packet.h"
 #include "utils.h"
 
-// session manager 서버 이름
+// Session manager server name
 static const char* OSXRDP_SESSIONMANAGER_NAME = "/tmp/osxrdpsessionmanager";
 static const char* OSXRDP_AGENT_NAME = "/tmp/osxrdp";
 
@@ -36,7 +36,7 @@ int ConnectionManager::Initialize() {
     assert(_agentIpc == NULL);
     assert(_sessionIpc == NULL);
     
-    // 처음에는 무조건 세션 메니저에 연결
+    // Always connect to session manager first
     if (_ConnectToSessionManager() == false) {
         // log
         return -1;
@@ -99,54 +99,54 @@ void ConnectionManager::Release() {
 }
 
 void ConnectionManager::KeepAlive() {
-    // agent ipc 와 연결된 경우
+    // If connected to agent IPC
     if (_agentIpc != NULL) {
-        // 쌓인 메시지를 처리
+        // Process queued messages
         xipc_loop_once(_agentIpc);
 
-        // 연결이 끊긴 경우
+        // If connection is lost
         if (_agentIpc->closed == 1) {
-            // 파괴
+            // Destroy
             xipc_destroy(_agentIpc);
             _agentIpc = NULL;
         }
     }
     
-    // 세션 ipc 와 연결된 경우
+    // If connected to session IPC
     if (_sessionIpc != NULL) {
-        // 쌓인 메시지를 처리
+        // Process queued messages
         xipc_loop_once(_sessionIpc);
         
         if (_sessionIpc->closed == 1) {
-            // 파괴
+            // Destroy
             xipc_destroy(_sessionIpc);
             _sessionIpc = NULL;
             
-            // 세션 ipc 가 끊긴 경우 접속 종료 처리
+            // If session IPC is disconnected, terminate connection
             _statusManager.SetStopping();
             
             return;
         }
     }
     
-    // 에이전트 연결이 끊긴 경우 (맨 처음 연결 init 제외)
+    // If agent connection is lost (excluding initial connection)
     if (_agentIpc == NULL && _statusManager.CheckInitStatus() == false) {
         
         _sessionId = -1;
         
-        // painter 와 커서 manager 는 재생성해야함 (agent 에 종속적)
-        // 단, in-flight 프레임 ACK가 끝나기 전에는 공유메모리를 즉시 해제하지 않는다.
+        // Painter and cursor manager must be recreated (agent-dependent)
+        // However, do not release shared memory until in-flight frame ACKs are done.
         if (_paintManager.TryReleaseForReconnect() == false) {
             return;
         }
         
-        // 마지막 시도가 락스크린일 경우 재접속
+        // If last attempt was lock screen, reconnect
         if (_statusManager.CheckReconnection() == false) {
-            // 그렇지 않은 경우 종료
+            // Otherwise terminate
             _statusManager.SetStopping();
         }
         else {
-            // 세션 재연결 시도를 위해 세션 정보 다시 조회
+            // Query session info again to retry session reconnection
             _statusManager.SetRequestSession();
             _command.SendSessionRequestMsg(_sessionIpc, _mod->username, (int)strlen(_mod->username));
         }
@@ -213,7 +213,7 @@ void ConnectionManager::HandleChannelMsg(long param1, long param2, long param3, 
     const char* data = (const char*)param3;
     int totalLen = (int)param4;
     
-    // 유효한 (처리하는) 이벤트인지 확인
+    // Check if it's a valid (handled) event
     int channel_msg_type = _channelManager.IsValidChannelMsg(channelId, channelFlags, data, dataLen, totalLen);
     if (channel_msg_type == OSXRDP_CHANNEL_INVALID) {
         return;
@@ -223,7 +223,7 @@ void ConnectionManager::HandleChannelMsg(long param1, long param2, long param3, 
         return;
     }
     
-    // 아직은 클립보드만 처리 (agent 로 전달)
+    // Only handle clipboard for now (forward to agent)
     if (channel_msg_type == OSXRDP_CHANNEL_CLIPBOARD) {
         _command.SendClipboardMsg(_agentIpc, channelId, channelFlags, data, dataLen, totalLen);
     }
@@ -241,7 +241,7 @@ bool ConnectionManager::_ConnectToSessionManager() {
         return false;
     }
     
-    // 상태 변경
+    // Change state
     _statusManager.SetRequestSession();
     
     _sessionIpc = ipc;
@@ -254,28 +254,29 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     
     printf("Connect to agent %d %d\n", sessionId, isLockScreen);
     
-    // 상태 변경
+    // Change state
     _statusManager.SetAgentConnecting(isLockScreen);
     
-    // session id 저장
+    // Save session id
     _sessionId = sessionId;
     
-    // agent 에 접속
+    // Connect to agent
     xipc_t* ipc = xipc_ctx_create(_OnReceivedAgentManagerMessage, this);
     if (ipc == NULL) {
         // log
         return false;
     }
     
-    // 상태에 맞는 agent 주소 찾기
+    // Find agent address matching state
     char server_name[512] = {0,};
     if (get_object_name(sessionId, OSXRDP_AGENT_NAME, server_name, sizeof(server_name), isLockScreen) == 0) {
         // log
+        xipc_destroy(ipc);
         return false;
     }
     
-    // agent 에 연결
-    // agent 가 늦게 뜰 수 있으므로 여러번 시도 (timeout을 둔다)
+    // Connect to agent
+    // Agent may start late, so retry multiple times (with timeout)
     bool connected = false;
     for (int i = 0; i < OSXRDP_RECONNECT_WAITCNT; i++) {
         if (xipc_connect_server(ipc, server_name) == 0) {
@@ -283,7 +284,7 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
             break;
         }
         
-        // 연결 시도 중 종료 요청이 이미 온 경우 (가능한가?)
+        // If a terminate request arrived during connection attempts (possible?)
         if (_statusManager.CheckNeedTerminate()) {
             connected = false;
             break;
@@ -298,10 +299,10 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
         return false;
     }
     
-    // 접속 완료 상태 갱신
+    // Update connection completed state
     _statusManager.SetAgentConnected(isLockScreen);
     
-    // 화면 녹화 데이터 요청
+    // Request screen recording data
     if (_mod->client_info.display_sizes.monitorCount == 0) {
         _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, PaintManager::CheckRecordFormat(_mod), _mod->usevirtualmon, 0, 0);
     }
@@ -310,7 +311,7 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     }
     
     
-    // 클립보드 활성화
+    // Enable clipboard
     _channelManager.SendClipboardServerInit();
     
     _agentIpc = ipc;

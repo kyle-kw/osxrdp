@@ -19,27 +19,27 @@ public:
     int Initialize();
     void Release();
     
-    // 초기 연결 수행
+    // Perform initial connection
     bool Connect(const struct mod* mod);
     
-    // ipc 메시지 펌프 및 연결 상태 확인
+    // IPC message pump and connection status check
     void KeepAlive();
     void GetWaitObjects(void* read_objs, int* rcount);
     
-    // 마우스 입력 전달
+    // Forward mouse input
     void SendMouseInput(int inputType, short x, short y);
     
-    // 키보드 입력 전달
+    // Forward keyboard input
     void SendKeyboardInput(int inputType, int keycode, int flags);
     
-    // 상태 조회
+    // Status queries
     bool CanPaint();
     bool NeedTerminate();
     void SetSuppress(bool suppress);
     
     void Terminate();
     
-    // 화면 그리기
+    // Screen painting
     void Paint();
     void PaintEnd(int ackFrameId);
     
@@ -64,10 +64,10 @@ private:
         
     void _HandleSessionMessage(int sessionId, int isLockScreen);
     
-    // session manager 수신 메시지 처리
+    // Handle session manager received messages
     static int _OnReceivedSessionManagerMessage(xipc_t* t, xipc_t* client, void* data, int len);
     
-    // agent 수신 메시지 처리
+    // Handle agent received messages
     static int _OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client, void* data, int len);
 };
 

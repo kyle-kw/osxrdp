@@ -129,7 +129,7 @@ void PaintRFX::Initialize(const struct mod* mod) {
         return;
     }
     
-    // 64x64 단위의 타일 만들기
+    // Create 64x64 tiles
     for (int ty = 0; ty < _tileRows; ++ty) {
         for (int tx = 0; tx < _tileCols; ++tx) {
             const int idx = (ty * _tileCols) + tx;
@@ -197,7 +197,7 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
         return;
     }
 
-    // slot 크기 검증: header(int) + indices(int*n) + tileData(16384*n)
+    // Validate slot size: header(int) + indices(int*n) + tileData(16384*n)
     const size_t expected = sizeof(int) + sizeof(int) * (size_t)slotTileCount + (size_t)slotTileCount * OSXRDP_RFX_TILE_BYTES;
     if (imgDataSize < expected) {
         return;
@@ -220,13 +220,13 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     xstream_writeInt8(_drawCmd,  XR_PIXEL_FORMAT_XRGB_8888);        // pixel_format
     xstream_writeInt32(_drawCmd, 0);                                // flags
 
-    // RFX progressive 처리를 위해 정렬된 (64) dirty area 를 설정
-    // producer 가 보낸 slot indices 를 그대로 사용 — frameInfo->dirtys 는 RFX 경로에서는 참고하지 않는다.
+    // Set 64-aligned dirty areas for RFX progressive processing
+    // Use slot indices from producer as-is - frameInfo->dirtys is not used in RFX path.
     xstream_writeInt16(_drawCmd, slotTileCount); // num_rects_d
     for (int i = 0; i < slotTileCount; ++i) {
         const int tileIdx = slotIndices[i];
         if (tileIdx < 0 || tileIdx >= _tileTotal) {
-            return; // 손상된 slot
+            return; // Corrupted slot
         }
         const TileRect* rect = &_tileRects[tileIdx];
         xstream_writeInt16(_drawCmd, rect->left);
@@ -284,4 +284,5 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     endCmd.frame_id = frame_id;
 
     mod->server_egfx_cmd((struct mod*)mod, (char*)&endCmd, sizeof(endCmd), NULL, 0);
+    munmap(mapped, _tileDataSize);
 }

@@ -23,28 +23,28 @@ SessionManagerServer::~SessionManagerServer() {
 }
 
 void SessionManagerServer::Start() {
-    // 서버가 시작중이거나 동작 중일 경우 무시
+    // Ignore if server is starting or running
     if (IsState(State_Running) || IsState(State_Starting)) {
         return;
     }
     
-    // 시작중으로 설정
+    // Set to starting
     SetState(State_Starting);
     
-    // ipc 서버 생성
+    // Create IPC server
     if (CreateCommandPipeServer() == false) {
         SetState(State_Idle);
         return;
     }
 
-    // IO 스레드 시작
+    // Start IO thread
     if (StartIoThread() == false) {
         DestroyCommandPipeServer();
         SetState(State_Idle);
         return;
     }
     
-    // Running으로 상태 변경
+    // Change state to Running
     SetState(State_Running);
 }
 
@@ -54,23 +54,23 @@ void SessionManagerServer::Stop() {
     }
     
     if (IsState(State_Stopping)) {
-        // 이미 정지 중이면 정지를 대기
+        // If already stopping, wait for stop
         StopIoThread();
         return;
     }
     
     SetState(State_Stopping);
     
-    // xipc_loop 탈출 유도
+    // Signal xipc_loop to exit
     SignalIoThreadToStop();
     
-    // IO 스레드 종료 대기
+    // Wait for IO thread to finish
     StopIoThread();
     
-    // IPC 정리
+    // Cleanup IPC
     DestroyCommandPipeServer();
     
-    // 상태 마무리
+    // Finalize state
     SetState(State_Stopped);
 }
 
@@ -118,7 +118,7 @@ bool SessionManagerServer::StartIoThread() {
         return true;
     }
     
-    // ipc 소켓을 기동하기 위한 thread 생성
+    // Create thread to run IPC socket loop
     int rc = pthread_create(&_ioThread, NULL, &SessionManagerServer::IoThreadEntry, this);
     if (rc != 0) {
         dzlog_error("[SessionManagerServer]::StartIoThread pthread_create failed: %d", rc);
@@ -177,7 +177,7 @@ int SessionManagerServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* dat
         return 0;
     }
     
-    // Stopping/Stopped 상태에서는 명령 무시
+    // Ignore commands in Stopping/Stopped state
     bool canHandle = _this->IsState(State_Running);
     if (!canHandle) {
         xstream_free(cmd);
@@ -191,15 +191,15 @@ int SessionManagerServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* dat
             
             const char* username = xstream_readStr(cmd, NULL);
             if (osxrdp_sessionmanager_getsessioninfo(username, &sessionInfo) != 0) {
-                // 접속하려는 사용자의 세션이 없음
-                // 세션을 만들고 정보를 osxup 로 전달
+                // No session for the connecting user
+                // Create session and send info to osxup
                 if (osxrdp_sessionmanager_createsession(&sessionInfo) != 0) {
-                    // 세션을 못만듬
+                    // Failed to create session
                     sessionInfo.sessionId = -1;
                 }
             }
             
-            // 정보를 다시 osxup 로 전달
+            // Send info back to osxup
             xstream* result = xstream_create(32);
             if (result != NULL) {
                 xstream_writeInt32(result, OSXRDP_SESSMAN_REPLY_SESSION);
@@ -254,7 +254,7 @@ int SessionManagerServer::OnClientRejected(xipc_t* t, xipc_t* client) {
     return 0;
 }
 
-// 상태 접근 헬퍼
+// state access helpers
 void SessionManagerServer::SetState(State s) {
     pthread_mutex_lock(&_stateLock);
     _state = s;

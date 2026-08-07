@@ -31,7 +31,7 @@ typedef struct cursor_data {
 } cursor_data_t;
 
 typedef struct screenrecord_frame {
-    int dirtyCount;  // <--- 이것이 0일 경우 full redraw
+    int dirtyCount;  // <--- if this is 0, full redraw
     struct RECT dirtys[MAX_DIRTY_COUNT];
 } screenrecord_frame_t;
 
@@ -41,26 +41,26 @@ typedef struct screenrecord_shm {
     int width;
     int height;
     int fps;
-    // osxup 가 full redraw 를 해야할 경우 ServerApp 에게 full frame 을 채워 달라는 신호. (RFX (partial frame 지원) 에서만 사용)
+    // Signal to ServerApp to fill a full frame when osxup needs a full redraw. (Used only with RFX which supports partial frames)
     _Atomic int consumer_request_full;
     screenrecord_frame_t frames[FRAME_SLOTS];
-    int screenrecord_data_size;
+    size_t screenrecord_data_size;
     char screenrecord_datas[1];
 } screenrecord_shm_t;
 
 // ---------------------------------------------------------------------------
-// RFX dirty-only SHM slot 레이아웃 (recordFormat == OSXRDP_RECORDFORMAT_RFX)
+// RFX dirty-only SHM slot layout (recordFormat == OSXRDP_RECORDFORMAT_RFX)
 // ---------------------------------------------------------------------------
 //   offset 0             : size_t imgSize
 //                            = sizeof(int)                              // tileCount
 //                            + sizeof(int) * tileCount                  // indices
 //                            + 16384 * tileCount                        // tile payload
-//   offset sizeof(size_t): int tileCount                                // 이 slot 에 포함된 tile 개수
-//   이어서               : int indices[tileCount]                       // row-major 전역 tile 인덱스
-//   이어서               : uint8_t tileData[tileCount * 16384]          // YUV444 planar (Y, U, V, A)
+//   offset sizeof(size_t): int tileCount                                // number of tiles included in this slot
+//   followed by          : int indices[tileCount]                       // row-major global tile indices
+//   followed by          : uint8_t tileData[tileCount * 16384]          // YUV444 planar (Y, U, V, A)
 //
-// tileCount 가 해당 프레임의 전체 tile 개수 (tileCols * tileRows) 와 같으면
-// full redraw 프레임이다. 그보다 작으면 dirty-only 프레임.
+// If tileCount equals the total tile count of the frame (tileCols * tileRows)
+// it is a full redraw frame. Otherwise it is a dirty-only frame.
 // ---------------------------------------------------------------------------
 #define OSXRDP_RFX_TILE_BYTES (16384)  // 64 x 64 x (Y + U + V + A)
 

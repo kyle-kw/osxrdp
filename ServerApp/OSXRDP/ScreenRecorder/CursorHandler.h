@@ -22,7 +22,7 @@ private:
     
     char* _tmpbuffer;
     
-    // 마우스 커서 정보를 가져오기 위한 connection id
+    // Connection ID for fetching cursor info
     int _connectionId;
     
     long long _lastCheckTime;

@@ -9,6 +9,7 @@
 #include <poll.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <Security/Security.h>
 
 #define MAX_CONNECTION 512
@@ -35,6 +36,11 @@ static int cfstring_equals_cstring(CFStringRef value, const char* expected)
 void set_nonBlocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0)
+    {
+        return;
+    }
+
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     
     int one = 1;
@@ -217,11 +223,20 @@ int xipc_create_server(xipc_t* ipc, const char* path, xipc_client_onconnected on
         
         return errno;
     }
+
+    // Restrict socket filesystem node to the owner (mitigates local unprivileged clients).
+    // Use chmod on the path: fchmod on AF_UNIX is not reliable across platforms.
+    if (chmod(path, S_IRUSR | S_IWUSR) != 0)
+    {
+        close(fd);
+        unlink(path);
+        return errno;
+    }
     
     if (listen(fd, 10) < 0)
     {
         close(fd);
-
+        unlink(path);
         return errno;
     }
     
@@ -232,6 +247,13 @@ int xipc_create_server(xipc_t* ipc, const char* path, xipc_client_onconnected on
     ipc->on_client_authorize = on_client_authorize;
     ipc->on_client_rejected = on_client_rejected;
     ipc->server_name = strdup(path);
+    if (ipc->server_name == NULL) {
+        ipc->isServer = 0;
+        close(fd);
+        ipc->fd = -1;
+        unlink(path);
+        return ENOMEM;
+    }
 
     set_nonBlocking(ipc->fd);
     
@@ -672,7 +694,7 @@ int send_data_to_client(xipc_t* client, int* needClose)
         return -1;
     }
     
-    // 쌓여있는 데이터들을 전송
+    // send queued data
     pthread_mutex_lock(&client->lock);
     
     while (client->out_msgs != NULL)
@@ -746,6 +768,10 @@ int recv_data_from_client(xipc_t* ipc, xipc_t* client, int* needClose)
             
             client->expected_len = expected_len;
             client->in_len = 0;
+        }
+        else
+        {
+            return 0;
         }
     }
     

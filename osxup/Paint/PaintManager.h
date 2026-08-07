@@ -20,7 +20,7 @@ public:
     void Paint();
     void PaintEnd(int ackFrameId);
     
-    // thread safe 하지 않지만, 동일 스레드에서 호출하므로 안전
+    // Not thread-safe, but safe because called from the same thread
     void PreparePaint(int displayIdx) {
         if (displayIdx >= 16) return;
         _needPaintDisplay[displayIdx] = 1;

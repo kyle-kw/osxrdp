@@ -16,41 +16,43 @@ MirrorAppServer::MirrorAppServer()
 , _state(State_Idle)
 , _client(NULL) {
     pthread_mutex_init(&_stateLock, NULL);
+    pthread_mutex_init(&_clientLock, NULL);
 }
 
 MirrorAppServer::~MirrorAppServer() {
     Stop();
     pthread_mutex_destroy(&_stateLock);
+    pthread_mutex_destroy(&_clientLock);
 }
 
 void MirrorAppServer::Start() {
-    // 서버가 시작중이거나 동작 중일 경우 무시
+    // ignore if server is starting or running
     if (IsState(State_Running) || IsState(State_Starting)) {
         return;
     }
     
-    // 필수 권한이 있는지 확인
+    // check required permissions
     if (is_root_process() == 0 && PermissionCheckUtils::HasAllPermissionToStartRemoteConnection() == false) {
         return;
     }
     
-    // 시작중으로 설정
+    // set to starting
     SetState(State_Starting);
     
-    // ipc 서버 생성
+    // create IPC server
     if (CreateCommandPipeServer() == false) {
         SetState(State_Idle);
         return;
     }
 
-    // IO 스레드 시작
+    // start IO thread
     if (StartIoThread() == false) {
         DestroyCommandPipeServer();
         SetState(State_Idle);
         return;
     }
     
-    // Running으로 상태 변경
+    // change state to Running
     SetState(State_Running);
 }
 
@@ -60,23 +62,23 @@ void MirrorAppServer::Stop() {
     }
     
     if (IsState(State_Stopping)) {
-        // 이미 정지 중이면 정지를 대기
+        // if already stopping, wait for stop
         StopIoThread();
         return;
     }
     
     SetState(State_Stopping);
     
-    // xipc_loop 탈출 유도
+    // signal xipc_loop to exit
     SignalIoThreadToStop();
     
-    // IO 스레드 종료 대기
+    // wait for IO thread to finish
     StopIoThread();
     
-    // IPC 정리
+    // cleanup IPC
     DestroyCommandPipeServer();
     
-    // 상태 마무리
+    // finalize state
     SetState(State_Stopped);
 }
 
@@ -85,15 +87,26 @@ bool MirrorAppServer::IsRunning() {
 }
 
 bool MirrorAppServer::HasRemoteClipboardFiles() {
-    ClipboardManager* clipboard = GetClipboardManager();
-    return clipboard != NULL && clipboard->HasRemoteFiles();
+    pthread_mutex_lock(&_clientLock);
+    ClipboardManager* clipboard = NULL;
+    if (_client != NULL && _client->user_data != NULL) {
+        struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
+        clipboard = ctx != NULL ? ctx->Clipboard : NULL;
+    }
+    bool result = clipboard != NULL && clipboard->HasRemoteFiles();
+    pthread_mutex_unlock(&_clientLock);
+    return result;
 }
 
 void MirrorAppServer::StartRemoteClipboardFileCopy() {
-    ClipboardManager* clipboard = GetClipboardManager();
-    if (clipboard != NULL) {
-        clipboard->StartRemoteFileCopy();
+    pthread_mutex_lock(&_clientLock);
+    if (_client != NULL && _client->user_data != NULL) {
+        struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
+        if (ctx != NULL && ctx->Clipboard != NULL) {
+            ctx->Clipboard->StartRemoteFileCopy();
+        }
     }
+    pthread_mutex_unlock(&_clientLock);
 }
 
 bool MirrorAppServer::CreateCommandPipeServer() {
@@ -112,6 +125,7 @@ bool MirrorAppServer::CreateCommandPipeServer() {
     
     if (get_object_name_by_sessionid("/tmp/osxrdp", server_path, 512, is_root_process()) == 0) {
         NSLog(@"[MirrorAppServer]::CreateCommandPipeServer get_object_name_by_sessionid failed.");
+        xipc_destroy(cmdPipe);
         return false;
     }
 
@@ -143,7 +157,7 @@ bool MirrorAppServer::StartIoThread() {
         return true;
     }
     
-    // ipc 소켓을 기동하기 위한 thread 생성
+    // create thread to run IPC socket loop
     int rc = pthread_create(&_ioThread, NULL, &MirrorAppServer::IoThreadEntry, this);
     if (rc != 0) {
         NSLog(@"[MirrorAppServer]::StartIoThread pthread_create failed: %d", rc);
@@ -184,26 +198,82 @@ void* MirrorAppServer::IoThreadEntry(void* arg) {
     return NULL;
 }
 
+static void TearDownClientCtx(struct MirrorAppClientCtx* ctx) {
+    if (ctx == NULL) {
+        return;
+    }
+
+    if (ctx->ScreenRecorder != NULL) {
+        ctx->ScreenRecorder->Stop();
+        delete ctx->ScreenRecorder;
+        ctx->ScreenRecorder = NULL;
+    }
+
+    if (ctx->Clipboard != NULL) {
+        ClipboardManager* clipboardToDelete = ctx->Clipboard;
+        ctx->Clipboard = NULL;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            delete clipboardToDelete;
+        });
+    }
+
+    free(ctx);
+}
+
+static void ForceCloseClient(xipc_t* client) {
+    if (client == NULL) {
+        return;
+    }
+
+    client->closed = 1;
+    if (client->fd >= 0) {
+        close(client->fd);
+        client->fd = -1;
+    }
+}
+
 int MirrorAppServer::OnClientConnected(xipc_t* t, xipc_t* client) {
     @autoreleasepool {
         MirrorAppServer* _this = (MirrorAppServer*)t->user_data;
         
         NSLog(@"[MirrorAppServer::OnClientConnected] new client connected");
         
+        pthread_mutex_lock(&_this->_clientLock);
+        
         if (_this->_client != NULL) {
-            struct MirrorAppClientCtx* oldCtx = (struct MirrorAppClientCtx*)_this->_client->user_data;
-            oldCtx->ScreenRecorder->SendDisconnectMsgToClient();
+            xipc_t* oldClient = _this->_client;
+            struct MirrorAppClientCtx* oldCtx = (struct MirrorAppClientCtx*)oldClient->user_data;
+            oldClient->user_data = NULL;
             _this->_client = NULL;
+
+            if (oldCtx != NULL && oldCtx->ScreenRecorder != NULL) {
+                oldCtx->ScreenRecorder->SendDisconnectMsgToClient();
+            }
+            TearDownClientCtx(oldCtx);
+            ForceCloseClient(oldClient);
         }
         
         struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)malloc(sizeof(struct MirrorAppClientCtx));
-        
+        if (ctx == NULL) {
+            pthread_mutex_unlock(&_this->_clientLock);
+            ForceCloseClient(client);
+            return 0;
+        }
+
+        memset(ctx, 0, sizeof(*ctx));
         ctx->ScreenRecorder = _this->CreateScreenRecorder();
         ctx->Clipboard = new ClipboardManager();
+        if (ctx->ScreenRecorder == NULL || ctx->Clipboard == NULL) {
+            TearDownClientCtx(ctx);
+            pthread_mutex_unlock(&_this->_clientLock);
+            ForceCloseClient(client);
+            return 0;
+        }
         
         client->user_data = (void*)ctx;
-        
         _this->_client = client;
+        
+        pthread_mutex_unlock(&_this->_clientLock);
 
         return 0;
     }
@@ -214,7 +284,7 @@ int MirrorAppServer::OnClientAuthorize(xipc_t* t, xipc_t* client) {
 #if DEBUG
     return 0;
 #else
-    // 클라이언트가 유효한 서명을 가지고 있는지 확인. (악의적인 프로세스의 접속 방지)
+    // Verify client has valid code signature. (Prevents malicious process connections)
     return xipc_is_client_signed_by(client, kTrustedClientTeamId, kTrustedClientSigningIdentifier);
 #endif
 }
@@ -238,23 +308,15 @@ int MirrorAppServer::OnClientDisconnected(xipc_t* t, xipc_t* client) {
         MirrorAppServer* _this = (MirrorAppServer*)t->user_data;
         NSLog(@"[MirrorAppServer::OnClientDisconnected] client disconnected");
         
+        pthread_mutex_lock(&_this->_clientLock);
         if (_this->_client == client) {
             _this->_client = NULL;
         }
+        pthread_mutex_unlock(&_this->_clientLock);
 
-        if (client->user_data == NULL)
-            return 0;
-        
         struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)client->user_data;
-        if (ctx == NULL)
-            return 0;
-        
-        ctx->ScreenRecorder->Stop();
-        delete ctx->ScreenRecorder;
-        delete ctx->Clipboard;
-        free(ctx);
-        
         client->user_data = NULL;
+        TearDownClientCtx(ctx);
 
         return 0;
     }
@@ -283,7 +345,7 @@ int MirrorAppServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* data, in
             return 0;
         }
         
-        // Stopping/Stopped 상태에서는 명령 무시
+        // Ignore commands in Stopping/Stopped state
         bool canHandle = _this->IsState(State_Running);
         if (!canHandle) {
             NSLog(@"[MirrorAppServer::OnMessageReceived] invalid status");
@@ -312,7 +374,7 @@ int MirrorAppServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* data, in
     }
 }
 
-// 상태 접근 헬퍼
+// state access helpers
 void MirrorAppServer::SetState(State s) {
     pthread_mutex_lock(&_stateLock);
     _state = s;
@@ -334,8 +396,8 @@ bool MirrorAppServer::IsState(State s) {
 }
 
 ScreenRecorderManager* MirrorAppServer::CreateScreenRecorder() {
-    // ScreenCaptureKit 은 macOS 12.3 이상부터 사용할 수 있지만, 버그가 있어 사실상 macOS 14 이상부터 사용할 수 있음. (필터링 버그)
-    // 따라서 구형 os 에서는 레거시 API 를 사용하여 화면을 녹화하도록 구성. (성능 차이는 크게 나지 않는것 같음)
+    // ScreenCaptureKit is available from macOS 12.3+ but has bugs, so effectively requires macOS 14+. (filtering bug)
+    // So on older OS, legacy API is used for screen recording. (Performance difference is not significant)
     if (@available(macOS 14.0,*)) {
         if (is_root_process() == 1) {
             return new ScreenRecorderManager(true);
@@ -349,11 +411,4 @@ ScreenRecorderManager* MirrorAppServer::CreateScreenRecorder() {
     }
 }
 
-ClipboardManager* MirrorAppServer::GetClipboardManager() {
-    if (_client == NULL || _client->user_data == NULL) {
-        return NULL;
-    }
 
-    struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)_client->user_data;
-    return ctx != NULL ? ctx->Clipboard : NULL;
-}

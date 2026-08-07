@@ -1,6 +1,7 @@
 
 #ifndef xshm_h
 #define xshm_h
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -8,14 +9,14 @@ extern "C" {
 
 typedef struct xshm {
     int fd;
-    int size;
+    size_t size;
     int owner;
     int unused;
     void* mem;
     char name[260];
 } xshm_t;
 
-xshm_t* xshm_create(const char* name, int size);
+xshm_t* xshm_create(const char* name, size_t size);
 xshm_t* xshm_open(const char* name);
 
 int xshm_write(xshm_t* shm, const void* data, int len);

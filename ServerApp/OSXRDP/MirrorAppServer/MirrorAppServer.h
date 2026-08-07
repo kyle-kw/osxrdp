@@ -23,7 +23,7 @@ public:
     void StartRemoteClipboardFileCopy();
     
 private:
-    // 상태 머신
+    // state machine
     enum State {
         State_Idle = 0,
         State_Starting,
@@ -37,13 +37,14 @@ private:
     
     xipc_t* _client; // currently, only one client can connect per each account
     
-    // 동기화/스레드
+    // synchronization/thread
     pthread_mutex_t _stateLock;
+    pthread_mutex_t _clientLock;
     pthread_t _ioThread;
     int _ioThreadStarted;
     State _state;
     
-    // 내부 헬퍼
+    // internal helpers
     bool CreateCommandPipeServer();
     void DestroyCommandPipeServer();
     
@@ -53,21 +54,20 @@ private:
     
     static void* IoThreadEntry(void* arg);
     
-    // 상태 접근 헬퍼
+    // state access helpers
     void SetState(State s);
     State GetState();
     bool IsState(State s);
     
-    // xipc 콜백
+    // xipc callbacks
     static int OnClientAuthorize(xipc_t* t, xipc_t* client);
     static int OnClientRejected(xipc_t* t, xipc_t* client);
     static int OnClientConnected(xipc_t* t, xipc_t* client);
     static int OnClientDisconnected(xipc_t* t, xipc_t* client);
     static int OnMessageReceived(xipc_t* t, xipc_t* client, void* data, int len);
     
-    // 기타
+    // misc
     ScreenRecorderManager* CreateScreenRecorder();
-    ClipboardManager* GetClipboardManager();
 };
 
 #endif /* MirrorAppServer_hpp */

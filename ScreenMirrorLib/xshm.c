@@ -2,26 +2,30 @@
 #include "xshm.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
-xshm_t* xshm_create(const char* name, int size) {
-    if (name == NULL || strlen(name) == 0 || size <= 0) {
+xshm_t* xshm_create(const char* name, size_t size) {
+    if (name == NULL || strlen(name) == 0 || size == 0) {
+        return NULL;
+    }
+    if (strlen(name) >= sizeof(((xshm_t*)0)->name)) {
         return NULL;
     }
     
-    // shared memory 생성
+    // create shared memory
     shm_unlink(name);
     int fd = shm_open(name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fd < 0) {
         return NULL;
     }
     
-    // 크기 설정
-    if (ftruncate(fd, size) != 0) {
+    // set size
+    if (ftruncate(fd, (off_t)size) != 0) {
         
         close(fd);
         shm_unlink(name);
@@ -29,7 +33,7 @@ xshm_t* xshm_create(const char* name, int size) {
         return NULL;
     }
     
-    // shm 주소 가져오기
+    // get shm address
     void* addr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
         
@@ -52,13 +56,18 @@ xshm_t* xshm_create(const char* name, int size) {
     shm->size = size;
     shm->owner = 1;
     shm->mem = addr;
-    strcpy(shm->name, name);
+    snprintf(shm->name, sizeof(shm->name), "%s", name);
     
     return shm;
 }
 
 xshm_t* xshm_open(const char* name) {
-    if (name == NULL) return NULL;
+    if (name == NULL || strlen(name) == 0) {
+        return NULL;
+    }
+    if (strlen(name) >= sizeof(((xshm_t*)0)->name)) {
+        return NULL;
+    }
     
     int fd = shm_open(name, O_RDWR, 0600);
     if (fd < 0) {
@@ -66,14 +75,14 @@ xshm_t* xshm_open(const char* name) {
     }
     
     struct stat st = {0,};
-    if (fstat(fd, &st) != 0 || st.st_size == 0) {
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
         
         close(fd);
         
         return NULL;
     }
     
-    void* addr = mmap(NULL, st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    void* addr = mmap(NULL, (size_t)st.st_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (addr == MAP_FAILED) {
         close(fd);
         
@@ -83,35 +92,35 @@ xshm_t* xshm_open(const char* name) {
     xshm_t* shm = (xshm_t*)malloc(sizeof(xshm_t));
     if (shm == NULL) {
         
-        munmap(addr, st.st_size);
+        munmap(addr, (size_t)st.st_size);
         close(fd);
         
         return NULL;
     }
     
     shm->fd = fd;
-    shm->size = (int)st.st_size;
+    shm->size = (size_t)st.st_size;
     shm->owner = 0;
     shm->mem = addr;
-    strcpy(shm->name, name);
+    snprintf(shm->name, sizeof(shm->name), "%s", name);
     
     return shm;
 }
 
 int xshm_write(xshm_t* shm, const void* data, int len) {
     if (shm == NULL || data == NULL || len <= 0) return 1;
-    if (len > shm->size) return 1;
+    if ((size_t)len > shm->size) return 1;
     
-    memcpy(shm->mem, data, len);
+    memcpy(shm->mem, data, (size_t)len);
     
     return 0;
 }
 
 int xshm_read(xshm_t* shm, void* buffer, int len) {
     if (shm == NULL || buffer == NULL || len <= 0) return 1;
-    if (len > shm->size) return 1;
+    if ((size_t)len > shm->size) return 1;
 
-    memcpy(buffer, shm->mem, len);
+    memcpy(buffer, shm->mem, (size_t)len);
     
     return 0;
 }

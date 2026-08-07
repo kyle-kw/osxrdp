@@ -32,11 +32,11 @@ bool VirtualMonitor::Create(int width, int height, int left, int top, int index,
     HoldDisplaySleepAssertion();
     WakeupDisplay();
     
-    // 가상 디스플레이를 생성
+    // Create virtual display
     CGVirtualDisplayDescriptor* desc = [[CGVirtualDisplayDescriptor alloc] init];
     if (desc == nil) return false;
     
-    // 가상 디스플레이의 기본 속성
+    // Virtual display base properties
     desc.queue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0);
     desc.name = @"OSXRDP Virtual Display";
     desc.maxPixelsWide = width;
@@ -57,7 +57,7 @@ bool VirtualMonitor::Create(int width, int height, int left, int top, int index,
     CGVirtualDisplaySettings* settings = [[CGVirtualDisplaySettings alloc] init];
     if (settings == nil) return false;
     
-    // 특정 해상도 이상일 경우 hidpi 모드 (hack?)
+    // Enable HiDPI mode for high resolutions (hack?)
     if (width > 2300 && height > 1500) {
         settings.hiDPI = 1;
     }
@@ -65,8 +65,8 @@ bool VirtualMonitor::Create(int width, int height, int left, int top, int index,
         settings.hiDPI = 0;
     }
     
-    // 이와 같이 구성을 채우지 않으면 macOS 가 이를 모니터가 아닌 다른 무언가로 인식하여 대화상자를 띄우는것 같음 (airplay 수신기?)
-    // 따라서 기본 구성을 진짜 모니터처럼 넣고 xrdp 해상도를 마지막에 넣는다.
+    // Without filling the configuration like this, macOS may recognize it as something other than a monitor and show a dialog (AirPlay receiver?)
+    // So put default modes like a real monitor, and add the xrdp resolution last.
     settings.modes = @[
         [[CGVirtualDisplayMode alloc] initWithWidth:3840 height:2160 refreshRate:60],
         [[CGVirtualDisplayMode alloc] initWithWidth:2560 height:1440 refreshRate:60],
@@ -86,7 +86,7 @@ bool VirtualMonitor::Create(int width, int height, int left, int top, int index,
     CGVirtualDisplay* virtualDisplay = [[CGVirtualDisplay alloc] initWithDescriptor:desc];
     if (virtualDisplay == nil) return false;
     
-    // 가상 디스플레이 속성 적용
+    // Apply virtual display settings
     [virtualDisplay applySettings:settings];
     
     WakeupDisplay();
@@ -109,11 +109,13 @@ bool VirtualMonitor::Create(int width, int height, int left, int top, int index,
 }
 
 void VirtualMonitor::Destroy() {
-    // 가상 모미터 watch 스레드 정지
+    // Stop virtual monitor watch thread
     if (_watchRunning == true) {
+        pthread_mutex_lock(&_watchLock);
         _watchRunning = false;
         pthread_cond_signal(&_watchWake);
-        pthread_join(_watchThread, NULL); // 완전히 정지할때까지 대기
+        pthread_mutex_unlock(&_watchLock);
+        pthread_join(_watchThread, NULL); // Wait until fully stopped
     }
 
     if (_disabledDisplayIdsCnt > 0) {
@@ -121,11 +123,11 @@ void VirtualMonitor::Destroy() {
         usleep(kDisplayReconfigSettleUsec);
     }
 
-    // 비활성화한 디스플레이 롤백 (반드시 먼저 해야함, 그렇지 않는 경우 위 설명처럼 windowserver 가 크래시할 수 있음)
+    // Rollback disabled displays (must do first, otherwise windowserver may crash as described above)
     RestoreOtherMonitors();
 
     for (int i = 0; i < _virtualDisplayInfoCnt; i++) {
-        // nil 로 설정하면 알아서 뽀개짐 (즉시 뽀개지는건 아님)
+        // Setting to nil destroys it automatically (not immediately)
         _virtualDisplayInfo[i].virtualDisplay = nil;
     }
 
@@ -188,17 +190,17 @@ void VirtualMonitor::ReleaseDisplaySleepAssertion() {
     _displaySleepAssertion = kIOPMNullAssertionID;
 }
 
-// todo: DisplayUtils::ApplyDisplayEnabled 에 중복 로직이 있음
+// todo: Duplicate logic exists in DisplayUtils::ApplyDisplayEnabled
 bool VirtualMonitor::DisableOtherMonitors() {
     NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors begin virtualDisplayCnt=%d disabledCnt=%d]", _virtualDisplayInfoCnt, _disabledDisplayIdsCnt);
     
-    // 가상 디스플레이가 없으면 무시
+    // Ignore if no virtual display
     if (_virtualDisplayInfoCnt <= 0) {
         NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors failed reason=noVirtualDisplay]");
         return false;
     }
     
-    // 디스플레이 갯수를 조회
+    // Get display count
     uint32_t displayCnt = 0;
     CGError displayListErr = CGGetOnlineDisplayList(0, NULL, &displayCnt);
     NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors onlineCnt=%u err=%d]", displayCnt, displayListErr);
@@ -208,7 +210,7 @@ bool VirtualMonitor::DisableOtherMonitors() {
         return false;
     }
     
-    // 디스플레이 id 들을 조회
+    // Get display IDs
     CGDirectDisplayID* displayIds = (CGDirectDisplayID*)malloc(sizeof(CGDirectDisplayID) * displayCnt);
     if (displayIds == NULL) {
         NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors failed reason=mallocDisplayIds cnt=%u]", displayCnt);
@@ -264,7 +266,7 @@ bool VirtualMonitor::DisableOtherMonitors() {
             continue;
         }
         
-        // 물리 디스플레이를 끄도록 구성
+        // Configure physical display to be disabled
         CGError configureErr = CGSConfigureDisplayEnabled(cfg, displayIds[i], false);
         NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors configure id=%u enabled=0 err=%d]", displayIds[i], configureErr);
         
@@ -277,7 +279,7 @@ bool VirtualMonitor::DisableOtherMonitors() {
         }
         
         if (exists == false) {
-            // 나중에 복원할 수 있도록 id 를 저장
+            // Save ID for later restoration
             _disabledDisplayIds[newDisabledDisplayIdsCnt] = displayIds[i];
             newDisabledDisplayIdsCnt++;
             NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors add disabled id=%u newCnt=%d]", displayIds[i], newDisabledDisplayIdsCnt);
@@ -287,7 +289,7 @@ bool VirtualMonitor::DisableOtherMonitors() {
         }
     }
     
-    // 설정 저장
+    // Apply configuration
     CGError completeErr = CGCompleteDisplayConfiguration(cfg, kCGConfigureForAppOnly);
     if (completeErr != kCGErrorSuccess) {
         NSLog(@"[VirtualMonDebugMsg : DisableOtherMonitors failed reason=complete err=%d oldCnt=%d newCnt=%d]", completeErr, _disabledDisplayIdsCnt, newDisabledDisplayIdsCnt);
@@ -407,7 +409,7 @@ int VirtualMonitor::SetResolution(int index) {
 
     CGDisplayModeRef bestMode = NULL;
     
-    // Retina 해상도 까지 조회하기 위한 옵션
+    // Option to include Retina (HiDPI) resolutions
     CFStringRef keys[1] = { kCGDisplayShowDuplicateLowResolutionModes };
     CFTypeRef values[1] = { kCFBooleanTrue };
         
@@ -430,7 +432,7 @@ int VirtualMonitor::SetResolution(int index) {
     
     if (displayInfo->is_retina) {
         CFIndex cnt = CFArrayGetCount(modes);
-        // Retina (HiDPI) 가 먹힌 해상도를 먼저 찾기
+        // Find Retina (HiDPI) resolution first
         for (CFIndex i = 0; i < cnt; i++) {
             CGDisplayModeRef mode = (CGDisplayModeRef)CFArrayGetValueAtIndex(modes, i);
             
@@ -444,7 +446,7 @@ int VirtualMonitor::SetResolution(int index) {
             }
         }
         
-        // Retina 해상도를 찾지 못한 경우 일반 해상도를 찾기
+        // If no Retina resolution found, find regular resolution
         if (bestMode == NULL) {
             CFIndex cnt = CFArrayGetCount(modes);
             for (CFIndex i = 0; i < cnt; i++) {
@@ -696,9 +698,9 @@ void* VirtualMonitor::WatchThreadProc(void* args) {
 }
 
 void VirtualMonitor::WatchThreadPorcInternal() {
-    // 아직 가상 모니터가 완전히 활성화 되어있는지 확인하지 못한 상황
+    // Virtual monitor not yet fully activated
     if (_init == false) {
-        // 모든 가상 모니터가 완전히 사용 가능한지 확인
+        // Check if all virtual monitors are fully available
         if (IsAllVirtualDisplayOnline() == false) {
             NSLog(@"[VirtualMonitor::WatchThreadProc] virtual display does not online yet");
             return;
@@ -708,19 +710,19 @@ void VirtualMonitor::WatchThreadPorcInternal() {
         _init = true;
     }
     
-    // 가상 모니터를 제외한 다른 모니터가 온라인인지 확인
+    // Check if other monitors besides virtual monitor are online
     DisableOtherMonitors();
     
-    // 해상도 정보 확인 (가상 모니터)
+    // Check resolution info (virtual monitor)
     for (int i = 0; i < _virtualDisplayInfoCnt; i++) {
         if (IsRightResolution(i) == false) {
-            // 해상도가 틀어진 경우 (혹은 아직 설정되지 않은 경우) --> 해상도 설정
+            // If resolution is wrong (or not set yet) --> set resolution
             NSLog(@"[VirtualMonitor::WatchThreadProc] virtual display has invalid resolution. try change it index=%d", i);
             SetResolution(i);
         }
     }
 
-    // 다른 display 추가/삭제 과정에서 display 배치나 primary 가 풀리는 경우 원복
+    // Restore display layout and primary if changed during display add/remove
     if (IsRightDisplayLayout() == false) {
         NSLog(@"[VirtualMonitor::WatchThreadProc] virtual display has invalid layout. try change it");
         ApplyDisplayLayout();

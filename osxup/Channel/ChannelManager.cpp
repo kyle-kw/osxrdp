@@ -30,7 +30,7 @@ bool ChannelManager::Initialize(const struct mod* mod) {
     _mod = mod;
     _inited = true;
     
-    // 클립보드 채널 id 조회
+    // Get clipboard channel ID
     _clipboardChannelId = mod->server_get_channel_id((struct mod*)mod, CLIPRDR_SVC_CHANNEL_NAME);
     if (_clipboardChannelId < 0) {
         return false;
@@ -47,7 +47,7 @@ void ChannelManager::SendClipboardServerInit() {
         return;
     }
 
-    // 클립보드 가용성 설정
+    // Set clipboard capabilities
     xstream_t* caps = xstream_create(28);
     if (caps != NULL) {
         int flags = CB_USE_LONG_FORMAT_NAMES |
@@ -56,11 +56,11 @@ void ChannelManager::SendClipboardServerInit() {
 
         xstream_writeInt16(caps, CB_CLIP_CAPS);
         xstream_writeInt16(caps, 0);
-        xstream_writeInt32(caps, 16); // 총 데이터 길이
+        xstream_writeInt32(caps, 16); // total data length
         xstream_writeInt16(caps, 1);
         xstream_writeInt16(caps, 0);
         xstream_writeInt16(caps, CB_CAPSTYPE_GENERAL);
-        xstream_writeInt16(caps, 12); // 이후 데이터 길이
+        xstream_writeInt16(caps, 12); // subsequent data length
         xstream_writeInt32(caps, CB_CAPS_VERSION_2);
         xstream_writeInt32(caps, flags);
         xstream_writeInt32(caps, 0);
@@ -100,7 +100,7 @@ void ChannelManager::Release() {
     _inited = false;
 }
 
-// rdp 의 다양한 채널 중 클립보드만 처리 (아직까지는)
+// Only handle clipboard among RDP channels (for now)
 int ChannelManager::IsValidChannelMsg(int channelId, int channelFlags, const char* data, int dataLen, int totalLen) {
     (void)channelFlags;
     (void)data;

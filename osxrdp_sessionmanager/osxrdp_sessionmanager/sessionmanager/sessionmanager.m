@@ -149,7 +149,7 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
         
         dzlog_info("[osxrdp_sessionmanager_getsessioninfo] username: %s", username);
         
-        // 요청된 계정의 uid 를 조회 (기존 : 계정명 비교)
+        // Look up UID of requested account (previously: compare account names)
         NSError* error = nil;
         ODNode* authNode = [ODNode nodeWithSession:[ODSession defaultSession]
                                                 type:kODNodeTypeAuthentication
@@ -160,7 +160,7 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
             hasRequestedUid = osxrdp_copy_user_uid(authNode, requestedUsername, &requestedUid);
         }
         
-        // 컴퓨터의 gui 세션을 enum
+        // Enumerate GUI sessions on the computer
         NSArray<NSDictionary*>* sessions = CFBridgingRelease(CGSCopySessionList());
         if (sessions == nil || sessions.count == 0) {
             dzlog_error("[osxrdp_sessionmanager_getsessioninfo] enum sessions is null or empty");
@@ -168,18 +168,18 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
             return -1;
         }
         
-        // 세션에서 요청된 계정의 세션정보를 조회
+        // Look up session info for the requested account
         
-        // 주의!
-        // 한 컴퓨터에 콘솔 세션에는 단 하나의 잠금 화면만 있어야 한다. (그렇지 않은 경우 무한으로 깜박거림...)
-        // 요청된 계정의 세션이 있는 경우
-        //   잠긴 경우 :
-        //     다른 잠금 화면이 있는 경우 : 해당 잠금 화면을 사용
-        //     다른 잠금 화면이 없는 경우 : 잠금 화면 만들기 (세션 생성)
-        //   잠기지 않은 경우 : 그대로 사용
-        // 요청된 계정의 세션이 없는 경우
-        //   다른 잠금 화면이 있는 경우 : 해당 잠금 화면을 사용
-        //   다른 잠금 화면이 없는 경우 : 잠금 화면 만들기 (세션 생성)
+        // Note!
+        // A console session must have only one lock screen. (Otherwise infinite flickering...)
+        // If the requested account has a session:
+        //   If locked:
+        //     If another lock screen exists: use that lock screen
+        //     If no other lock screen: create lock screen (create session)
+        //   If not locked: use as-is
+        // If the requested account has no session:
+        //   If another lock screen exists: use that lock screen
+        //   If no other lock screen: create lock screen (create session)
         
         int mySessionId = -1;
         int isMySessionLogined = 0;
@@ -194,7 +194,7 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
             
             dzlog_info("[osxrdp_sessionmanager_getsessioninfo] enum session. username : %s, sessionId : %d", session_username != nil ? session_username.UTF8String : "(null)", sessionId.intValue);
             
-            // 요청된 계정의 uid 와 enum 한 세션의 사용자 uid 를 비교
+            // Compare requested account UID with enumerated session user UID
             if (session_username != nil && osxrdp_usernames_match(authNode, requestedUsername, requestedUid, hasRequestedUid, session_username)) {
                 
                 NSNumber* isLogined = session[@"kCGSessionLoginDoneKey"];
@@ -216,7 +216,7 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
             }
         }
         
-        // 요청한 계정의 세션이 있고, 콘솔 세션인 경우
+        // If requested account has a session and it's a console session
         if (mySessionId != -1 && isMySessionConsole == 1) {
             sessionInfo->isLogined = isMySessionLogined;
             sessionInfo->sessionId = mySessionId;
@@ -224,17 +224,17 @@ int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* s
             return 0;
         }
         
-        // 요청한 계정의 세션이 없는 경우
+        // If requested account has no session
         if (loginWindowSessionId != -1 && isLoginWindowSessionConsole == 1) {
-            // 다른 잠금 화면이 있는경우
-            // 이것을 사용
+            // If another lock screen exists
+            // Use it
             sessionInfo->isLogined = 0;
             sessionInfo->sessionId = loginWindowSessionId;
             
             return 0;
         }
         
-        // 그렇지 못한 경우 세션을 만들도록 유도
+        // Otherwise, induce session creation
     }
     
     dzlog_info("[osxrdp_sessionmanager_getsessioninfo] session not found");
@@ -282,23 +282,23 @@ int osxrdp_sessionmanager_createsession(session_info_t* created_sessionInfo) {
 
 void osxrdp_sessionmanager_releasesession(int sessionId) {
     
-    // 세션이 로그인 되어있는지 확인 (그냥 날려버리면 사용자 작업이 유실)
+    // Check if session is logged in (destroying it would lose user work)
     @autoreleasepool {
         
         dzlog_info("[osxrdp_sessionmanager_releasesession] release session %d", sessionId);
         
-        // 컴퓨터의 gui 세션을 enum
+        // Enumerate GUI sessions on the computer
         NSArray<NSDictionary*>* sessions = CFBridgingRelease(CGSCopySessionList());
         if (sessions == nil) {
             return;
         }
         
-        // 요청된 세션 id 를 사용하여 세션 정보 조회
+        // Look up session info using the requested session ID
         for (NSDictionary* session in sessions) {
             NSString* current_sessionId = session[kCGSSessionIDKey];
             NSString* current_isLogined = session[@"kCGSessionLoginDoneKey"];
             
-            // 아직 로그인되지 않은 세션일 경우 날려버리기
+            // If the session is not yet logged in, destroy it
             if (current_sessionId.intValue == sessionId && current_isLogined.intValue == 0) {
                 dzlog_info("[osxrdp_sessionmanager_releasesession] release session completed %d", sessionId);
                 

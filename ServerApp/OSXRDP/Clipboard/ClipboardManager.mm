@@ -38,10 +38,10 @@ static const char* FILEGROUP_FORMAT_NAME = "FileGroupDescriptorW";
 static const char* FILECONTENTS_FORMAT_NAME = "FileContents";
 static const char* DROPEFFECT_FORMAT_NAME = "DropEffect";
 
-// 클립보드 모니터링 주기
+// Clipboard monitoring interval
 static const useconds_t CLIPBOARD_MONITOR_INTERVAL_US = 500000;
 
-// 한번에 전송할 클립보드 데이터의 크기 (바이트)
+// Clipboard data chunk size per transfer (bytes)
 static const int IPC_CLIPBOARD_CHUNK_SIZE = 14 * 1024;
 static const int MAX_CLIPBOARD_DATA_SIZE = 30 * 1024 * 1024; // 30MB
 static const int MAX_FILECONTENTS_CHUNK_SIZE = 4 * 1024 * 1024;
@@ -509,6 +509,7 @@ ClipboardManager::ClipboardManager()
 , _monitorStopRequested(0)
 , _client(NULL)
 , _lastChangeCount(INVALID_CHANGE_COUNT)
+, _remoteUpdateInProgress(false)
 , _remoteFileClipEnabled(0)
 , _localFileItems(NULL)
 , _remoteFileItems(NULL)
@@ -537,7 +538,7 @@ ClipboardManager::ClipboardManager()
         _lastChangeCount = (int)[pasteboard changeCount];
     }
 
-    // 클립보드 모니터링 스레드
+    // Clipboard monitoring thread
     if (pthread_create(&_monitorThread, NULL, MonitorThreadEntry, this) == 0) {
         _monitorThreadRunning = 1;
     }
@@ -638,14 +639,14 @@ void ClipboardManager::StartRemoteFileCopy() {
     });
 }
 
-// 클라이언트에서 전달된 클립보드 이벤트
+// Clipboard event received from client
 void ClipboardManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
     if (client == NULL || cmd == NULL) {
         return;
     }
 
     int packetType = xstream_readInt32(cmd);
-    // 클립보드 이벤트가 아닌 경우 drop
+    // Drop if not a clipboard event
     if (packetType != OSXRDP_PACKETTYPE_REQ_SETCLIENTCLIP) {
         return;
     }
@@ -840,7 +841,9 @@ void ClipboardManager::HandleCaps(xstream_t* clipStream, int msgLen) {
         if (type == CB_CAPSTYPE_GENERAL && len >= 12) {
             xstream_readInt32(clipStream);
             int flags = xstream_readInt32(clipStream);
+            pthread_mutex_lock(&_lock);
             _remoteFileClipEnabled = ((flags & CB_STREAM_FILECLIP_ENABLED) != 0) ? 1 : 0;
+            pthread_mutex_unlock(&_lock);
             if (len > 12) {
                 xstream_readData(clipStream, len - 12);
             }
@@ -1357,6 +1360,11 @@ void ClipboardManager::ProcessLocalClipboardChange(int forceSend) {
     }
 
     pthread_mutex_lock(&_lock);
+    if (_remoteUpdateInProgress) {
+        _lastChangeCount = changeCount;
+        pthread_mutex_unlock(&_lock);
+        return;
+    }
     _lastChangeCount = changeCount;
     pthread_mutex_unlock(&_lock);
 
@@ -1391,7 +1399,10 @@ void ClipboardManager::SendFormatList(xipc_t* client) {
     NSData* rtfData = [pasteboard dataForType:NSPasteboardTypeRTF];
     NSImage* image = [[NSImage alloc] initWithPasteboard:pasteboard];
     bool hasFile = UpdatePasteboardFileItems(NULL);
-    if (hasFile && _remoteFileClipEnabled == 0) {
+    pthread_mutex_lock(&_lock);
+    int remoteFileClipEnabled = _remoteFileClipEnabled;
+    pthread_mutex_unlock(&_lock);
+    if (hasFile && remoteFileClipEnabled == 0) {
         hasFile = false;
     }
 
@@ -1984,6 +1995,12 @@ void ClipboardManager::StartNextRemoteFileItem() {
             }
 
             pthread_mutex_lock(&_lock);
+            if (_fileCopyInProgress == 0 || _fileCopyCancelled != 0) {
+                pthread_mutex_unlock(&_lock);
+                [handle closeFile];
+                [[NSFileManager defaultManager] removeItemAtPath:targetPath error:nil];
+                return;
+            }
             if (_fileCopyCurrentHandle != NULL) {
                 CFRelease(_fileCopyCurrentHandle);
             }
@@ -2193,7 +2210,7 @@ bool ClipboardManager::PrepareRemoteFileDestinations(NSURL* folderUrl) {
     for (NSDictionary* item in snapshot) {
         NSString* name = [item objectForKey:@"name"];
         
-        // NFD --> NFC (윈도우에서의 자소 분리 해결)
+        // NFD --> NFC (fix character decomposition issue on Windows)
         NSString* normalizedName = [name stringByReplacingOccurrencesOfString:@"\\" withString:@"/"];
         NSArray* components = [normalizedName componentsSeparatedByString:@"/"];
         if ([components count] == 0) {
@@ -2460,15 +2477,20 @@ bool ClipboardManager::SetTextToPasteboard(const void* data, int dataLen, int fo
                                        options:0
                                          range:NSMakeRange(0, [normalizedText length])];
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = true;
+    pthread_mutex_unlock(&_lock);
+
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard clearContents];
     BOOL result = [pasteboard setString:normalizedText forType:NSPasteboardTypeString];
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = false;
     if (result == YES) {
-        pthread_mutex_lock(&_lock);
         _lastChangeCount = (int)[pasteboard changeCount];
-        pthread_mutex_unlock(&_lock);
     }
+    pthread_mutex_unlock(&_lock);
 
     return result == YES;
 }
@@ -2489,6 +2511,10 @@ bool ClipboardManager::SetRtfToPasteboard(const void* data, int dataLen) {
         plainText = [attributedText string];
     }
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = true;
+    pthread_mutex_unlock(&_lock);
+
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     NSMutableArray* types = [NSMutableArray arrayWithObject:NSPasteboardTypeRTF];
     if (plainText != nil && [plainText length] > 0) {
@@ -2501,11 +2527,12 @@ bool ClipboardManager::SetRtfToPasteboard(const void* data, int dataLen) {
         [pasteboard setString:plainText forType:NSPasteboardTypeString];
     }
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = false;
     if (result == YES) {
-        pthread_mutex_lock(&_lock);
         _lastChangeCount = (int)[pasteboard changeCount];
-        pthread_mutex_unlock(&_lock);
     }
+    pthread_mutex_unlock(&_lock);
 
     return result == YES;
 }
@@ -2534,15 +2561,20 @@ bool ClipboardManager::SetImageToPasteboard(const void* data, int dataLen) {
         return false;
     }
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = true;
+    pthread_mutex_unlock(&_lock);
+
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     [pasteboard declareTypes:[NSArray arrayWithObject:NSPasteboardTypeTIFF] owner:nil];
     BOOL result = [pasteboard setData:tiffData forType:NSPasteboardTypeTIFF];
 
+    pthread_mutex_lock(&_lock);
+    _remoteUpdateInProgress = false;
     if (result == YES) {
-        pthread_mutex_lock(&_lock);
         _lastChangeCount = (int)[pasteboard changeCount];
-        pthread_mutex_unlock(&_lock);
     }
+    pthread_mutex_unlock(&_lock);
 
     return result == YES;
 }

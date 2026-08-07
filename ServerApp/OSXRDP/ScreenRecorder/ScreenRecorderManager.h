@@ -21,7 +21,7 @@ public:
     void SendDisconnectMsgToClient();
 
 private:
-    // 녹화 요청 파라미터
+    // recording request parameters
     struct RecordStartParams {
         int monitorIndex;
         int width;
@@ -49,14 +49,14 @@ private:
     
     bool _useLegacyRecorder;
     
-    // 녹화 데이터가 저장되는 공유 메모리
+    // shared memory where recording data is stored
     xshm_t* _recordShm[16];
     int _recordShmCnt;
     
-    // 마우스 커서 이미지가 저장되는 공유 메모리
+    // shared memory where cursor image is stored
     xshm_t* _cursorShm;
     
-    // osxup 로 명령을 보내기 위한 파이프
+    // pipe to send commands to osxup
     xipc_t* _client;
     
     // Input handler (mouse, keyboard)
@@ -67,8 +67,8 @@ private:
     
     VirtualMonitor _virtualMonitor;
 
-    // RFX YUV444 canonical buffer — dirty 영역만 변환해 누적한 뒤, 해당 타일만 SHM slot 에
-    // 포장(indices + tileData)해 내보낸다.
+    // RFX YUV444 canonical buffer - accumulates only converted dirty tiles, then packs only those tiles into SHM slot
+    // (indices + tileData) for output.
     uint8_t* _rfxCanonical;
     size_t   _rfxCanonicalSize;
     int      _rfxCanonicalWidth;
@@ -76,7 +76,7 @@ private:
     size_t   _rfxTileCols;
     size_t   _rfxTileRows;
     
-    // 다음 프레임을 full redraw 로 내보내야 하는지 표시.
+    // flag indicating whether next frame should be full redraw.
     bool     _rfxFullRedrawRequired;
 
     screenrecord_frame_t _pendingDirty[16];
@@ -93,12 +93,12 @@ private:
     bool ParseStartRecordParams(xstream_t* cmd, RecordStartParams* params);
     bool PrepareRecordResources();
     
-    // 녹화기 설정
+    // recorder configuration
     bool ResolveDisplayForRecorder();
     int GetMonitorRecordWidth(int recordIdx);
     int GetMonitorRecordHeight(int recordIdx);
 
-    // 녹화 데이터 처리기
+    // recording data handlers
     static void HandleBGRA32RecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
     static void HandleBGRA32DirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data);
     
@@ -111,32 +111,32 @@ private:
     static void HandleRFXRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
     bool HandleRFXDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, int displayIdx);
     
-    // 데이터를 작성할 slot 찾기
+    // find a slot to write data
     bool AcquireFrameSlot(screenrecord_shm_t** recordInfoOut, screenrecord_frame** frameOut, char** dataOut, unsigned int* writePosOut, int displayIdx);
     
-    // 데이터 작성 완료 flag 설정
+    // set frame slot commit flag
     void CommitFrameSlot(screenrecord_shm_t* recordInfo, unsigned int writePos, int displayIdx);
 
-    // osxup 에게 그릴 데이터가 있음을 알림 (NEEDPAINT)
+    // notify osxup that paint data is available (NEEDPAINT)
     void SendNeedPaintMsg(int displayIdx);
 
-    // NV12Packed 데이터를 메모리에 기록
+    // write NV12Packed data to memory
     static bool CopyNV12PackedFrame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
     
-    // NV12Aligned 데이터를 메모리에 기록
+    // write NV12Aligned data to memory
     static bool CopyNV12AlignedFrame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
     
-    // BGRA32 데이터를 메모리에 기록
+    // write BGRA32 data to memory
     static bool CopyBGRA32Frame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
 
-    // RFX canonical buffer 관리 및 BGRA -> YUV444 타일 변환 (dirty 영역만)
+    // RFX canonical buffer management and BGRA -> YUV444 tile conversion (dirty areas only)
     bool EnsureRFXCanonical(int width, int height);
-    // 다음 프레임을 full redraw 로 돌리도록 플래그 설정
+    // set flag to force full redraw on next frame
     void InvalidateRFXCanonical();
     void ReleaseRFXCanonical();
     bool ConvertRFXTile(const uint8_t* bgraBase, size_t bgraStride, int width, int height, int tileCol, int tileRow, uint8_t* tileBase);
     
-    // dirty area (변화한 구역) 정보 처리
+    // dirty area (changed region) processing
     inline static void ProcessDirtyArea(const CGRect* rect, int limitX, int limitY, struct RECT* dst);
     
     void ResetPendingDirty();

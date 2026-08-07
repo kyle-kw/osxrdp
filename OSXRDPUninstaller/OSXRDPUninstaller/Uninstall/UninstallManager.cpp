@@ -33,6 +33,8 @@ bool UninstallManager::Elevate() {
     status = AuthorizationCopyRights(_authRef, &authRights, kAuthorizationEmptyEnvironment, flags, NULL);
     
     if (status != errAuthorizationSuccess) {
+        AuthorizationFree(_authRef, kAuthorizationFlagDefaults);
+        _authRef = NULL;
         return false;
     }
     
@@ -69,7 +71,7 @@ void UninstallManager::DoUninstall() {
     RemoveFile("/var/log/xrdp.log");
     RemoveDirectory("/Applications/osxrdp");
 
-    // 설치 흔적(receipt) 및 시스템 리포트 > 설치 목록 정리
+    // Clean up install receipts and system report > install history
     ForgetReceipt("com.byungho.osxrdp.setup");
     CleanInstallHistory("com.byungho.osxrdp");
 }
@@ -100,9 +102,13 @@ bool UninstallManager::RemoveFile(const char* path) {
 }
 
 bool UninstallManager::UnregisterDaemon(const char* path) {
-    char* args[] = { "bootout" , (char*)path, NULL};
+    char* args[] = { "unload" , "-w", (char*)path, NULL};
 
-    AuthorizationExecuteWithPrivileges(_authRef, "/bin/launchctl", kAuthorizationFlagDefaults, args, NULL);
+    OSStatus status = AuthorizationExecuteWithPrivileges(_authRef, "/bin/launchctl", kAuthorizationFlagDefaults, args, NULL);
+    if (status != errAuthorizationSuccess) {
+        _errmsg = "Failed to unregister daemon";
+        return false;
+    }
 
     return true;
 }

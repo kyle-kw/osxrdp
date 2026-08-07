@@ -21,34 +21,34 @@ public:
     
     bool CheckInitStatus();
     
-    // 화면 출력이 가능한 상태인지 확인
+    // Check if painting is possible
     bool CheckCanPaint();
     
-    // 연결을 종료해야 하는 상태인지 확인
+    // Check if connection should be terminated
     bool CheckNeedTerminate();
     
-    // 잠금 화면을 출력하는 상태인지 확인
+    // Check if in lock screen state
     bool CheckInLockscreen();
     
-    // 잠금 화면이 종료되어 재연결을 시도해야하는 상태인지 확인
+    // Check if lock screen ended and reconnection should be attempted
     bool CheckReconnection();
     
-    // 세션 요청 상태 설정
+    // Set session request state
     void SetRequestSession();
     
-    // 에이전트 연결중 상태 설정
+    // Set agent connecting state
     void SetAgentConnecting(bool lockscreen);
     
-    // 에이전트 연결완료 상태 설정
+    // Set agent connected state
     void SetAgentConnected(bool lockscreen);
     
-    // 에이전트 녹화 시작 상태 설정
+    // Set agent recording started state
     void SetAgentRecordStart(bool lockscreen);
     
-    // 연결 종료 상태 설정
+    // Set stopping state
     void SetStopping();
     
-    // 출력 제한 상태 설정
+    // Set suppress state
     void SetSuppressed(bool suppress);
     
 private:

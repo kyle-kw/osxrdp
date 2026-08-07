@@ -14,7 +14,7 @@ int main(int argc, const char * argv[]) {
         g_Lockscreen = 1;
     }
     else {
-        // 중복 실행 확인
+        // check for duplicate execution
         dup = duprun_initialize("com.byungho.osxrdp.agent");
         if (dup == NULL) {
             return 1;

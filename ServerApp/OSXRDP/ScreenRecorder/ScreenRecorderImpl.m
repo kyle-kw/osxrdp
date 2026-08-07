@@ -52,7 +52,7 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     _recordFilter = [[SCContentFilter alloc] initWithDisplay:display excludingWindows:@[]];
     if (_recordFilter == nil) return;
     
-    // 녹화 설정 (해상도, 프레임 등)
+    // Recording configuration (resolution, frame rate, etc.)
     _recordConfig = [[SCStreamConfiguration alloc] init];
     _recordConfig.width = width;
     _recordConfig.height = height;
@@ -61,35 +61,35 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     //_recordConfig.colorSpaceName = kCGColorSpaceSRGB;
     
     if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED || recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
-        // h264 사용 시
+        // When using H.264
         _recordConfig.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
     }
     else if (recordFormat == OSXRDP_RECORDFORMAT_RFX) {
-        // rfx 사용 시 (ScreenCaptureKit 호환성을 위해 BGRA 캡처 후 상위에서 YUV444 변환)
+        // When using RFX (capture BGRA for ScreenCaptureKit compatibility, convert to YUV444 upstream)
         _recordConfig.pixelFormat = kCVPixelFormatType_32BGRA;
     }
     else {
-        // bitmap 사용 시
+        // When using bitmap
         _recordConfig.pixelFormat = kCVPixelFormatType_32BGRA;
     }
     
     _recordConfig.showsCursor = NO;
-    // 구형 os 는 screenrecorderfallback 을 사용하도록 함.
+    // Older OS uses ScreenRecorderFallback.
     if (@available(macOS 14.0,*)) {
         _recordConfig.preservesAspectRatio = NO;
     }
     
     _recordConfig.minimumFrameInterval = CMTimeMake(1, framerate);
     
-    // 녹화 큐 설정
+    // Recording queue setup
     dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
     _recordQue = dispatch_queue_create("osxrdp.record", attr);
     
-    // 녹화 데이터 콜백 (인코딩 한 후 이를 전달하기 위해)
+    // Recording data callback (to deliver encoded data)
     _recordCb = recordCb;
     _recordCbUserData = userData;
     
-    // 녹화 이벤트 콜백 (갑작스러운 녹화 정지 이벤트를 받기 위해)
+    // Recording event callback (to receive sudden stop events)
     _recordCmdCb = recordCmdCb;
     _recordCmdCbUserData = userData2;
     
@@ -135,7 +135,7 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
 - (BOOL)stop {
     if (_recordStream == nil) return YES;
     
-    // 녹화 정지 요청 후 완전히 종료될때까지 대기
+    // Wait for recording to fully stop after stop request
     __block NSError* stopError = nil;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
     [_recordStream stopCaptureWithCompletionHandler:^(NSError* _Nullable err) {
@@ -145,7 +145,7 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     }];
     dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
     
-    // 아직 녹화가 정지되지 않음. (이 경우 상위의 ScreenRecorder 내부의 공유 메모리를 절대 해제하면 안됨. 녹화 콜백이 다시 발생하여 크래시 발생할 수 있음)
+    // Recording not yet stopped. (Must not release shared memory in this case - recording callbacks may still fire and crash)
     if (stopError != nil) {
         NSLog(@"[ScreenRecorderImpl::stop] Stop Record failed. %ld\n", stopError.code);
         
@@ -157,6 +157,9 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
         _recordStream = nil;
         _recordFilter = nil;
         _recordConfig = nil;
+        if (_recordQue) {
+            dispatch_sync(_recordQue, ^{});
+        }
 
         NSLog(@"[ScreenRecorderImpl::stop] Stop Record\n");
         
@@ -166,13 +169,13 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
 
 - (void)stream:(SCStream *)stream didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer ofType:(SCStreamOutputType)type {
     
-    // dirty area 정보 추출
+    // Extract dirty area info
     int dirtyAreaCnt = SetDirtyAreaInfoFromSampleBuffer(sampleBuffer, _dirtyRectBuffer);
     if (dirtyAreaCnt < 0) {
         return;
     }
     
-    // ImageBuffer 추출 (CVPixelBufferRef와 동일)
+    // Extract ImageBuffer (same as CVPixelBufferRef)
     CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
     if (pixelBuffer == NULL) {
         return;
@@ -180,18 +183,18 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
 
     CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     
-    // 콜백 호출 (osxup 로 화면 데이터 전송)
+    // Call callback (send screen data to osxup)
     _recordCb(pixelBuffer, _dirtyRectBuffer, dirtyAreaCnt, _recordCbUserData, _displayIdx);
 
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
 }
 
 - (void)stream:(SCStream *)stream didStopWithError:(NSError *)error {
-    // 녹화 정지 요청
+    // Request recording stop
     _recordCmdCb(1, _recordCmdCbUserData);
 }
 
-// 디스플레이 id 를 사용하여 ScreenCaptureKit 디스플레이 조회
+// Look up ScreenCaptureKit display by display ID
 - (SCDisplay*)getDisplayFromDisplayId:(int)displayId {
     __block SCDisplay* found = nil;
     

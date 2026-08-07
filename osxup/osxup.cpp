@@ -11,7 +11,7 @@
 #define EXPORT_CC __attribute__((visibility("default")))
 #endif
 
-// 가상 모니터 등과 같은 이유로 지금은 다중 사용자의 동시 접속을 지원하지 않음
+// Multi-user simultaneous access is not supported yet due to virtual monitor etc.
 MultipleConnectionManager _multipleConn;
 
 int g_FailedAuth = 0;
@@ -25,7 +25,7 @@ lib_mod_start(struct mod *mod, int w, int h, int bpp)
     mod->height = h;
     mod->bpp = bpp;
     
-    // 홀수 해상도일 경우 nv12 인코딩에서 문제가 발생...
+    // Odd resolutions cause issues with NV12 encoding...
     mod->width &= ~0x1;
     mod->height &= ~0x1;
     
@@ -39,7 +39,7 @@ lib_mod_connect(struct mod *mod, int fd)
 {
     char canonicalUsername[MAX_PATH] = {0,};
 
-    // 사용자 인증 (macOS 계정)
+    // User authentication (macOS account)
     if (strlen(mod->username) == 0 || strlen(mod->password) == 0) {
         mod->server_msg(mod, "Authentication failed.", 0);
         return 1;
@@ -62,8 +62,6 @@ lib_mod_connect(struct mod *mod, int fd)
     }
     g_FailedAuth = 0;
     
-    // 아직 다중접속을 지원하지 않음
-    _multipleConn.AddConnection(mod);
 
     strncpy(mod->username, canonicalUsername, MAX_PATH - 1);
     mod->username[MAX_PATH - 1] = '\0';
@@ -80,7 +78,7 @@ lib_mod_connect(struct mod *mod, int fd)
         return 1;
     }
     
-    // connection manager 를 초기화 (sessionmanager와 연결)
+    // Initialize connection manager (connect to sessionmanager)
     if (mod->connectionManager->Initialize() != 0) {
         mod->server_msg(mod, "Could not connect to sessionmanager.", 0);
 
@@ -93,6 +91,9 @@ lib_mod_connect(struct mod *mod, int fd)
 
         return 1;
     }
+
+    // Multi-connection is not yet supported
+    _multipleConn.AddConnection(mod);
 
     return 0;
 }
@@ -225,17 +226,17 @@ lib_mod_check_wait_objs(struct mod *mod)
     // main loop
     mod->connectionManager->KeepAlive();
     
-    // 연결을 종료해야하는지 확인
+    // Check if connection should be terminated
     if (mod->connectionManager->NeedTerminate() == true) {
         return 1;
     }
     
-    // 화면을 그릴 수 있는 상태인지 확인
+    // Check if painting is possible
     if (mod->connectionManager->CanPaint() == false) {
         return 0;
     }
     
-    // 화면을 그리기
+    // Paint screen
     mod->connectionManager->Paint();
 
     return 0;
@@ -301,6 +302,9 @@ mod_init(void)
     struct mod* mod;
     
     mod = (struct mod*)malloc(sizeof(struct mod));
+    if (mod == NULL) {
+        return NULL;
+    }
     memset(mod, 0x00, sizeof(struct mod));
     
     mod->size = sizeof(struct mod);
@@ -339,7 +343,7 @@ mod_exit(void* handle)
         return 0;
     }
     
-    _multipleConn.RemoveConnection();
+    _multipleConn.RemoveConnection(mod);
     
     if (mod->connectionManager != NULL) {
         mod->connectionManager->Release();

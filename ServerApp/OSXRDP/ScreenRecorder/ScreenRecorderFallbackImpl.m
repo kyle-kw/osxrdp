@@ -10,6 +10,7 @@
     void* _recordCbUserData;
     void* _recordCmdCbUserData;
     int _displayIdx;
+    BOOL _intentionalStop;
 }
 
 - (instancetype)init {
@@ -22,6 +23,7 @@
         _recordCbUserData = NULL;
         _recordCmdCb = NULL;
         _recordCmdCbUserData = NULL;
+        _intentionalStop = NO;
     }
     return self;
 }
@@ -49,8 +51,8 @@
         (__bridge NSString*)kCGDisplayStreamQueueDepth : @3,
         (__bridge NSString*)kCGDisplayStreamMinimumFrameTime : @(frameTime),
         (__bridge NSString*)kCGDisplayStreamDestinationRect : (__bridge_transfer NSDictionary*)destRectDict,
-        (__bridge NSString*)kCGDisplayStreamPreserveAspectRatio : @NO,      // 비율 무시하고 녹화 (늘리기)
-        //(__bridge NSString*)kCGDisplayStreamColorSpace : (__bridge id)sRGB, // 이 설정이 없으면 물빠진 색감이 나옴
+        (__bridge NSString*)kCGDisplayStreamPreserveAspectRatio : @NO,      // Record ignoring aspect ratio (stretch)
+        //(__bridge NSString*)kCGDisplayStreamColorSpace : (__bridge id)sRGB, // Without this setting, colors appear washed out
     };
     
     CGColorSpaceRelease(sRGB);
@@ -60,24 +62,26 @@
                                                      IOSurfaceRef frameSurface,
                                                      CGDisplayStreamUpdateRef updateRef) {
         if (status == kCGDisplayStreamFrameStatusFrameComplete && frameSurface != NULL) {
-            // 녹화 콜백
+            // Recording callback
             [self processFrame:frameSurface displayTime:displayTime update:updateRef];
         }
         else if (status == kCGDisplayStreamFrameStatusStopped) {
-            // 녹화 상태 콜백
-            [self processStreamStopped];
+            // Recording status callback (only terminate for unintentional stop)
+            if (!_intentionalStop) {
+                [self processStreamStopped];
+            }
         }
     };
     
     dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
     _recordQue = dispatch_queue_create("osxrdp.fallback_record", attr);
     
-    int format = kCVPixelFormatType_32BGRA; // 일반 bitmap
+    int format = kCVPixelFormatType_32BGRA; // Standard bitmap
     if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED || recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
         format = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange; // h264
     }
     else if (recordFormat == OSXRDP_RECORDFORMAT_RFX) {
-        format = kCVPixelFormatType_32BGRA; // rfx (BGRA 캡처 후 상위에서 YUV444 변환)
+        format = kCVPixelFormatType_32BGRA; // RFX (capture BGRA, convert to YUV444 upstream)
     }
     
     _displayStream = CGDisplayStreamCreateWithDispatchQueue(displayId, width, height, format, (__bridge CFDictionaryRef)_recordConfig, _recordQue, handler);
@@ -122,6 +126,7 @@
 - (BOOL)stop {
     if (_displayStream == NULL) return YES;
     
+    _intentionalStop = YES;
     CGDisplayStreamStop(_displayStream);
     
     if (_recordQue) {
@@ -146,12 +151,12 @@
         return;
     }
     
-    // dirty 영역을 조회
+    // Get dirty rects
     size_t dirtyRectsCnt= 0;
     const CGRect* dirtyRects = CGDisplayStreamUpdateGetRects(updateRef, kCGDisplayStreamUpdateDirtyRects, &dirtyRectsCnt);
     CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     
-    // 녹화 콜백 전달
+    // Deliver recording callback
     _recordCb(pixelBuffer, dirtyRects, (int)dirtyRectsCnt, _recordCbUserData, _displayIdx);
     
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);

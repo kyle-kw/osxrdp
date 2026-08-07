@@ -154,7 +154,7 @@ void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
         xstream_writeInt16(_drawCmd, height);
     }
     
-    // 한번 더 복사 (그대로)
+    // Copy once more (as-is)
     int rects_data_len = (int)((char*)_drawCmd->data_current - rects_start_ptr);
     xstream_writeData(_drawCmd, rects_start_ptr, rects_data_len);
     

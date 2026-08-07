@@ -16,7 +16,7 @@
 
 int main(int argc, const char * argv[]) {
     
-    // OS 업데이트 시 /Library/Logs 하위의 모든 파일이 사라짐.... 뭐지
+    // All files under /Library/Logs disappear on OS update.... what?
     mkdir("/Library/Logs/osxrdp", 0755);
     
     // initialize log
@@ -35,7 +35,7 @@ int main(int argc, const char * argv[]) {
         return 1;
     }
     
-    // 중복 실행 확인
+    // Check for duplicate execution
     duprun* dup = duprun_initialize("com.byungho.osxrdp.sessionmanager");
     if (dup == NULL) {
         NSLog(@"[osxrdp_sessionmanager] program already running.");

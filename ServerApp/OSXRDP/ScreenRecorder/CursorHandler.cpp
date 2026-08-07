@@ -50,20 +50,20 @@ CursorHandler::~CursorHandler()
 
 bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
 {
-    // 커서가 이전과 달라진 경우 커서 업데이트
+    // Update cursor if changed from previous
     int seed = CGSCurrentCursorSeed();
     if (seed == _cursorseed) {
         return false;
     }
     _cursorseed = seed;
     
-    // 커서 데이터 크기 조회
+    // Get cursor data size
     int datasize = 0;
     if (CGSGetGlobalCursorDataSize(_connectionId, &datasize) != 0) {
         return false;
     }
 
-    // 크기가 유효한지
+    // Check if size is valid
     if (datasize <= 0 || datasize > (128 * 128 * 4)) {
         return false;
     }
@@ -75,7 +75,7 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
     int comps = 0;
     int bpc = 0;
 
-    // 커서 데이터 조회
+    // Get cursor data
     if (CGSGetGlobalCursorData(_connectionId,
                               _tmpbuffer,
                               &datasize,
@@ -107,8 +107,8 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
         return false;
     }
 
-    // macOS 용 ms windows app은 상관없지만, Windows 의 mstsc 는 정사각형 커서 모양만 받는것 같다.
-    // 따라서 이를 정사각형 캔버스에 그리기위해 가장 가까운 크기를 조회한다.
+    // MS Windows apps on macOS are fine, but Windows mstsc seems to only accept square cursor shapes.
+    // So find the nearest square size to draw on a square canvas.
     int dstSize = PickSquarePointerSize(srcW, srcH);
     if (dstSize > 96)
         dstSize = 96;
@@ -128,10 +128,10 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
     cursor->hotspotX = hotX;
     cursor->hotspotY = hotY;
 
-    // 그리기 (정사각형)
+    // Draw (square)
     BuildSquarePointerBGRA(_tmpbuffer, outRowBytes, datasize, srcW, srcH, dstSize, cursor->cursorImgData);
 
-    // 커서 이미지 크기
+    // Cursor image size
     cursor->cursorImgDataSize = cursor->width * cursor->height * 4;
         
     atomic_store_explicit(&cursor->updated, 1, memory_order_release);
@@ -164,7 +164,7 @@ void CursorHandler::BuildSquarePointerBGRA(const char* src, int srcRowBytes, int
     if (srcRowBytes <= 0) return;
     if (srcSizeBytes < srcRowBytes * srcHeight) return;
 
-    // rdp 의 커서는 상하를 반전해야 한다.
+    // RDP cursor requires vertical flip.
     for (int y = 0; y < copyH; ++y) {
         const uint8_t* srcRow = (const uint8_t*)src + y * srcRowBytes;
         uint8_t* dstRow = (uint8_t*)dstData + (dstSize - 1 - y) * dstRowBytes;

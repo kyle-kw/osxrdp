@@ -26,7 +26,7 @@ bool StartupManager::EnableStartup()
     NSError* err = nil;
     
     BOOL re = [[SMAppService mainAppService] registerAndReturnError: &err];
-    if (re != NO || err != nil)
+    if (re == NO)
     {
       return false;
     }
@@ -44,7 +44,7 @@ bool StartupManager::DisableStartup()
     NSError* err = nil;
     
     BOOL re = [[SMAppService mainAppService] unregisterAndReturnError: &err];
-    if (re != NO || err != nil)
+    if (re == NO)
     {
       return false;
     }

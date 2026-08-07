@@ -188,6 +188,7 @@ const char* xstream_readStr(xstream_t* stream, int* strLen) {
     if (_xstream_sizecheck(stream, len + sizeof(char)) == 0) {
         return NULL;
     }
+    if (((char*)stream->data_current)[len] != '\0') return NULL;
     
     char* str = (char*)stream->data_current;
     stream->data_current += (len + sizeof(char));

@@ -21,17 +21,17 @@ public:
     VirtualMonitor();
     ~VirtualMonitor();
     
-    // 가상 모니터를 생성
+    // Create virtual monitor
     bool Create(int width, int height, int left, int top, int index, bool isPrimary = false);
     
-    // 모든 가상 모니터를 파괴
+    // Destroy all virtual monitors
     void Destroy();
     
-    // 가상 모니터를 제외한 나머지 모니터를 비활성화
-    // 가상 모니터를 파괴 시 원래대로 돌아옴
+    // Disable all monitors except virtual monitor
+    // Restored when virtual monitor is destroyed
     bool DisableOtherMonitors();
     
-    // 비활성화 하였던 나머지 모니터들을 다시 활성화
+    // Re-enable previously disabled monitors
     void RestoreOtherMonitors();
     
     void StartMonitor();

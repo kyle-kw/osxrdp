@@ -49,6 +49,13 @@ int _pam_conv_handler(int num_msg, const struct pam_message **msg,
             msg[i]->msg_style == PAM_PROMPT_ECHO_ON) {
             reply[i].resp_retcode = 0;
             reply[i].resp = strdup(password);
+            if (reply[i].resp == NULL) {
+                for (int j = 0; j < i; j++) {
+                    free(reply[j].resp);
+                }
+                free(reply);
+                return PAM_BUF_ERR;
+            }
         }
         else {
             reply[i].resp_retcode = 0;
@@ -68,7 +75,7 @@ int _verify_mac_user(const char *username, const char *password) {
     retval = pam_start("sshd", username, &conv, &pamh);
 
     if (retval != PAM_SUCCESS) {
-        return 1; // 초기화 실패
+        return 1; // Initialization failed
     }
 
     retval = pam_authenticate(pamh, PAM_DISALLOW_NULL_AUTHTOK);

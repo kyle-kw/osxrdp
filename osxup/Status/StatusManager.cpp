@@ -16,17 +16,17 @@ bool StatusManager::CheckInitStatus() {
 }
 
 bool StatusManager::CheckCanPaint() {
-    // 명시적으로 출력 제한 요청이 온 경우 그리지 않음
+    // Do not paint if suppress is explicitly requested
     if (_suppress == true) {
         return false;
     }
     
-    // 잠금화면 혹은 메인 에이전트가 녹화를 시작한 경우 그리기
+    // Paint if lock screen or main agent has started recording
     if (_status == OSXUPStatus::AGENT_RECORD || _status == OSXUPStatus::AGENT_RECORD_LOCKSCREEN) {
         return true;
     }
     
-    // 나머지 상태에서는 아직 그리지 않음
+    // Do not paint in other states
     return false;
 }
 

@@ -29,7 +29,7 @@ void PaintBitmap::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo
     if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount < MAX_DIRTY_COUNT) {
         struct xrdp_rect dirtys[MAX_DIRTY_COUNT];
         
-        // dirty area 정보를 담기
+        // Store dirty area info
         for (int i = 0; i < frameInfo->dirtyCount; i++) {
             dirtys[i].x = (short)frameInfo->dirtys[i].x;
             dirtys[i].y = (short)frameInfo->dirtys[i].y;

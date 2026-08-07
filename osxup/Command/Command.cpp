@@ -1,6 +1,10 @@
 #include "../pch.h"
 #include "Command.h"
 #include "osxrdp/packet.h"
+#include "ipc.h"
+
+// Must stay under IPC body limit (MAX_BUFFER) after 6 int headers.
+static const int kMaxClipboardIpcPayload = 14 * 1024;
 
 void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, struct monitor_info* monitorInfo) {
     assert(agentIpc != NULL);
@@ -8,6 +12,9 @@ void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int re
     assert(height > 0);
 
     xstream_t* stream = xstream_create(1024);
+    if (stream == NULL) {
+        return;
+    }
     
     if (monitorCount > 16) {
         monitorCount = 1;
@@ -15,7 +22,7 @@ void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int re
 
     xstream_writeInt32(stream, OSXRDP_CMDTYPE_SCREEN);
     xstream_writeInt32(stream, OSXRDP_PACKETTYPE_REQ_SCREEN);
-    xstream_writeInt32(stream, 0);              // display index 등 (unused)
+    xstream_writeInt32(stream, 0);              // display index etc. (unused)
     xstream_writeInt32(stream, width);          // width
     xstream_writeInt32(stream, height);         // height
     xstream_writeInt32(stream, 60);             // fps (unused)
@@ -51,6 +58,9 @@ void Command::SendRecordStopMsg(xipc_t* agentIpc) {
     assert(agentIpc != NULL);
 
     xstream_t* stream = xstream_create(8);
+    if (stream == NULL) {
+        return;
+    }
 
     xstream_writeInt32(stream, OSXRDP_CMDTYPE_SCREEN);
     xstream_writeInt32(stream, OSXRDP_PACKETTYPE_REQ_SCREENOFF);
@@ -101,6 +111,9 @@ void Command::SendSessionRequestMsg(xipc_t* sessionIpc, const char* username, in
     assert(username != NULL);
     
     xstream_t* stream = xstream_create(512);
+    if (stream == NULL) {
+        return;
+    }
     xstream_writeInt32(stream, OSXRDP_SESSMAN_REQUEST_SESSION);
     xstream_writeStr(stream, username, (int)usernameLen);
     
@@ -113,6 +126,9 @@ void Command::SendSessionReleaseMsg(xipc_t* sessionIpc, int sessionId) {
     assert(sessionIpc != NULL);
     
     xstream_t* stream = xstream_create(8);
+    if (stream == NULL) {
+        return;
+    }
     xstream_writeInt32(stream, OSXRDP_SESSMAN_REQUEST_RELEASESESSION);
     xstream_writeInt32(stream, sessionId);
 
@@ -124,7 +140,17 @@ void Command::SendSessionReleaseMsg(xipc_t* sessionIpc, int sessionId) {
 void Command::SendClipboardMsg(xipc_t* agentIpc, int channelId, int channelFlags, const char* data, int dataLen, int totalLen) {
     assert(agentIpc != NULL);
 
-    xstream_t* stream = xstream_create(dataLen + sizeof(int) * 6);
+    if (data == NULL || dataLen <= 0 || totalLen <= 0 || dataLen > totalLen) {
+        return;
+    }
+    if (dataLen > kMaxClipboardIpcPayload) {
+        return;
+    }
+
+    xstream_t* stream = xstream_create(dataLen + (int)sizeof(int) * 6);
+    if (stream == NULL) {
+        return;
+    }
 
     xstream_writeInt32(stream, OSXRDP_CMDTYPE_CLIPBOARD);
     xstream_writeInt32(stream, OSXRDP_PACKETTYPE_REQ_SETCLIENTCLIP);
@@ -140,10 +166,15 @@ void Command::SendClipboardMsg(xipc_t* agentIpc, int channelId, int channelFlags
 }
 
 void Command::_SendMsg(xipc_t* ipc, xstream_t* stream) {
-    assert(stream != NULL);
+    if (ipc == NULL || stream == NULL) {
+        return;
+    }
     
     int bufferLen = 0;
     const void* buffer = xstream_get_raw_buffer(stream, &bufferLen);
+    if (buffer == NULL || bufferLen <= 0 || bufferLen >= MAX_BUFFER) {
+        return;
+    }
 
     xipc_send_data(ipc, buffer, bufferLen);
 }

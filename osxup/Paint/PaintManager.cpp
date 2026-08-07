@@ -90,11 +90,12 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
         char shm_name_with_idx[512];
         snprintf(shm_name_with_idx, sizeof(shm_name_with_idx), "%s_%d", shm_name, i);
 
-        // lockscreen 처럼 일부 output monitor 에만 SHM 이 존재할 수 있다.
+        // SHM may exist only for some output monitors (e.g. lock screen).
         _recordShm[i] = xshm_open(shm_name_with_idx);
 
         if (mod->client_info.display_sizes.monitorCount == 0 && _recordShm[i] == NULL) {
             // log
+            ReleaseResources();
             return false;
         }
 
@@ -103,13 +104,15 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
     
     if (get_object_name(sessionId, OSXRDP_CURSORSHM_NAME, shm_name, sizeof(shm_name), isLockScreen) == 0) {
         // log
+        ReleaseResources();
         return false;
     }
     
-    // 마우스 커서 데이터가 담긴 공유 메모리를 열기
+    // Open shared memory containing cursor data
     _cursorShm = xshm_open(shm_name);
     if (_cursorShm == NULL) {
         // log
+        ReleaseResources();
         return false;
     }
     
@@ -121,6 +124,11 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
     }
     else {
         _paint = new PaintBitmap();
+    }
+
+    if (_paint == NULL) {
+        ReleaseResources();
+        return false;
     }
     
     // painter initialize
@@ -193,13 +201,13 @@ void PaintManager::Paint() {
         return;
     }
 
-    // 재접속 중에는 이전 공유메모리에 대한 신규 paint 제출을 중지하고
-    // 기존 in-flight 프레임 ACK만 기다린다.
+    // During reconnection, stop submitting new paints to previous shared memory
+    // and only wait for existing in-flight frame ACKs.
     if (_releasePending == true) {
         return;
     }
     
-    // 마우스 커서 그리기
+    // Draw mouse cursor
     PaintMouseCursor();
     
     if (_inFlightCount >= FRAME_SLOTS * _recordShmCnt) {
@@ -207,13 +215,13 @@ void PaintManager::Paint() {
     }
     
     for (int i = 0; i < _recordShmCnt; i++) {
-        // 그릴 수 있는 유효한 디스플레이인지 확인
+        // Check if it's a valid display to paint
         if (_recordShm[i] == NULL)
             continue;
 
         _needPaintDisplay[i] = 0;
 
-        // in-flight 여유가 있는 동안 최대 3회 paint
+        // Paint up to 3 times while in-flight capacity is available
         int cnt = 0;
         while (_inFlightCountByDisplay[i] < FRAME_SLOTS && cnt < 3) {
             screenrecord_frame_t* frameInfo = NULL;
@@ -223,7 +231,7 @@ void PaintManager::Paint() {
             int height = 0;
             unsigned int shm_frame_id = 0;
 
-            // 읽을 데이터가 있는지 확인
+            // Check if there is data to read
             if (GetPaintData(&frameInfo, &imgData, &imgDataSize, &width, &height, &shm_frame_id, i) == false) {
                 break;
             }
@@ -234,7 +242,7 @@ void PaintManager::Paint() {
             }
             _inPainting = (_inFlightCount > 0);
 
-            // 그리기
+            // Paint
             _paint->DoPaint(_mod, frameInfo, imgData, imgDataSize, frame_id, i, width, height);
             
             cnt++;
@@ -243,13 +251,26 @@ void PaintManager::Paint() {
 }
 
 bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outImgData, size_t* outImgDataSize, int* outWidth, int* outHeight, unsigned int* frame_id, int displayIdx) {
-    screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[displayIdx]->mem;
+    if (displayIdx < 0 || displayIdx >= 16 || _recordShm[displayIdx] == NULL || _recordShm[displayIdx]->mem == NULL) {
+        return false;
+    }
 
-    // 읽을 데이터가 있는지 확인
+    xshm_t* recordShm = _recordShm[displayIdx];
+    if (recordShm->size < sizeof(screenrecord_shm_t)) {
+        return false;
+    }
+
+    screenrecord_shm_t* shm = (screenrecord_shm_t*)recordShm->mem;
+
+    // Check if there is data to read
     unsigned int read_pos = atomic_load_explicit(&shm->read_pos,  memory_order_acquire);
     unsigned int write_pos = atomic_load_explicit(&shm->write_pos, memory_order_acquire);
 
     if (read_pos == write_pos) {
+        return false;
+    }
+
+    if (shm->screenrecord_data_size <= sizeof(size_t) || shm->width <= 0 || shm->height <= 0) {
         return false;
     }
 
@@ -263,9 +284,9 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     bool selfContained = (_paint == NULL || _paint->FrameIsSelfContained() == true);
     bool trueBacklog = (displayInFlightCount == 0 && (write_pos - read_pos >= FRAME_SLOTS));
     
-    // backlog 를 처리하는 방법
-    //   - self-contained 포맷 (BGRA32 / NV12) : 최신 slot 으로 점프해서 full 로 처리.
-    //   - partial-frame 포맷 (RFX)            : 중간 dirty tile 을 재구성할 수 없으므로 backlog 전체를 drop 하고 producer 에게 full redraw 를 요청. 이번 paint 는 무시.
+    // How to handle backlog
+    //   - self-contained format (BGRA32 / NV12) : jump to latest slot and process full.
+    //   - partial-frame format (RFX)          : cannot reconstruct intermediate dirty tiles, so drop entire backlog and request full redraw from producer. Skip this paint.
     if (selfContained == false) {
         if (trueBacklog == true) {
             atomic_store_explicit(&shm->consumer_request_full, 1, memory_order_release);
@@ -281,14 +302,21 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     }
     
     unsigned int idx = targetPos % FRAME_SLOTS;
+    size_t slotOffset = (size_t)shm->screenrecord_data_size * (size_t)idx;
+    size_t minMapped = sizeof(screenrecord_shm_t) + slotOffset + (size_t)shm->screenrecord_data_size;
+    // screenrecord_datas is the flexible tail; validate against mapped region size.
+    if (minMapped > recordShm->size) {
+        return false;
+    }
+
     screenrecord_frame_t* frame = &(shm->frames[idx]);
-    char* imgData = *(&shm->screenrecord_datas + (size_t)shm->screenrecord_data_size * idx);
+    char* imgData = *(&shm->screenrecord_datas + slotOffset);
 
     size_t imgDataSize = 0;
     memcpy(&imgDataSize, imgData, sizeof(size_t));
 
-    // abnormal data --> skip it
-    if (imgDataSize == 0 || imgDataSize > shm->screenrecord_data_size)
+    // abnormal data --> skip it (size field is payload length; must fit after the size header)
+    if (imgDataSize == 0 || (sizeof(size_t) + imgDataSize) > (size_t)shm->screenrecord_data_size)
         return false;
 
     if (forceRedrawAll != 0) {
@@ -425,8 +453,10 @@ void PaintManager::PaintEnd(int ackFrameId) {
         if (hasReadPosByDisplay[i] == false) {
             continue;
         }
+        if (_recordShm[i] == NULL || _recordShm[i]->mem == NULL) {
+            continue;
+        }
 
-        
         screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[i]->mem;
         unsigned int read_pos = atomic_load_explicit(&shm->read_pos, memory_order_relaxed);
         unsigned int nextReadPos = maxReadPosByDisplay[i] + 1;
@@ -440,11 +470,24 @@ void PaintManager::PaintEnd(int ackFrameId) {
 }
 
 void PaintManager::PaintMouseCursor() {
+    if (_cursorShm == NULL || _cursorShm->mem == NULL || _mod == NULL) {
+        return;
+    }
+
     cursor_data_t* cursorData = (cursor_data_t*)_cursorShm->mem;
     
     int updated = atomic_load_explicit(&cursorData->updated,  memory_order_acquire);
     if (updated == 1) {
-        _mod->server_set_pointer_large((struct mod*)_mod, cursorData->hotspotX, cursorData->hotspotY, cursorData->cursorImgData, cursorData->cursorMaskData, 32, cursorData->width, cursorData->height);
+        int width = cursorData->width;
+        int height = cursorData->height;
+        if (width <= 0 || height <= 0 ||
+            width > MAX_CURSOR_IMG_BUFFER_SIZE ||
+            height > MAX_CURSOR_IMG_BUFFER_SIZE) {
+            atomic_store_explicit(&cursorData->updated, 0, memory_order_release);
+            return;
+        }
+
+        _mod->server_set_pointer_large((struct mod*)_mod, cursorData->hotspotX, cursorData->hotspotY, cursorData->cursorImgData, cursorData->cursorMaskData, 32, width, height);
         
         atomic_store_explicit(&cursorData->updated, 0, memory_order_release);
     }

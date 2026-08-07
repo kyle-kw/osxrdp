@@ -159,6 +159,10 @@ InputHandler::~InputHandler() {
 }
 
 void InputHandler::UpdateDisplayRes(int originalDisplayWidth, int originalDisplayHeight, int recordDisplayWidth, int recordDisplayHeight) {
+    if (recordDisplayWidth <= 0 || recordDisplayHeight <= 0) {
+        return;
+    }
+
     _originalDisplayWidth = originalDisplayWidth;
     _originalDisplayHeight = originalDisplayHeight;
     _recordDisplayWidth = recordDisplayWidth;
@@ -208,7 +212,7 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
     int clientY = xstream_readInt32(cmd);
     long long currentTime = GetCurrentEventTime();
     
-    // 최소화/복원 등으로 입력 간격이 크게 벌어지면 이전 클릭 상태를 버린다.
+    // If input interval is large due to minimize/restore, discard previous click state.
     if (_lastMouseInputEventTime != 0 && currentTime - _lastMouseInputEventTime > 1500) {
         RestorePreviousMouseKeydownEvent();
         
@@ -241,7 +245,7 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
             
             ev = CGEventCreateMouseEvent(_eventRef, mouseMoveFlags, point, btn);
             
-            // xcode minimap 과 같은 일부 컨트롤을 움직이려면 아래와 같은 값들을 설정해야 함.
+            // Some controls like Xcode minimap require these values to be set.
             int dx = clientX - _lastMousePosX;
             int dy = clientY - _lastMousePosY;
             
@@ -372,6 +376,10 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
         default:
             return;
     }
+
+    if (ev == NULL) {
+        return;
+    }
     
     CGEventSetIntegerValueField(ev, kCGMouseEventNumber, mouseEventNumber);
     CGEventPost(kCGSessionEventTap, ev);
@@ -419,6 +427,10 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
     }
     
     CGEventRef ev = CGEventCreateKeyboardEvent(_eventRef, keyCode, keyDown);
+    if (ev == NULL) {
+        return;
+    }
+
     ModifierStateChange modifierState = UpdateKeyboardModifierState(keyCode, keyDown);
     if (modifierState == ModifierStateChanged) {
         CGEventSetType(ev, kCGEventFlagsChanged);
@@ -428,7 +440,7 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
         return;
     }
 
-    // 미션 컨트롤
+    // Mission Control
     CGEventFlags eventFlags = _keyboardModifierFlags;
     if ((eventFlags & kCGEventFlagMaskControl) != 0 &&
         (keyCode == kVK_UpArrow || keyCode == kVK_DownArrow ||
@@ -559,7 +571,7 @@ int InputHandler::GetMouseWheelMoveAmount(int direction) {
         _wheelEventBurstCount++;
     }
     
-    // 아주 짧은 간격이 연속으로 들어올 때만 트랙패드로 본다.
+    // Only treat as trackpad when very short intervals come in consecutively.
     if (!newGesture && gap <= kFastWheelGapMs) {
         _fastWheelEventCount++;
     }
@@ -663,7 +675,7 @@ void InputHandler::PostScrollEvent(int amount, bool continuous) {
         return;
     }
 
-    // 트랙패드 스타일의 스크롤 설정 (연속되는 이벤트의 경우)
+    // Trackpad-style scroll setting (for continuous events)
     if (continuous) {
         CGEventSetIntegerValueField(ev, kCGScrollWheelEventIsContinuous, 1);
     }

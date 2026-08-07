@@ -21,7 +21,7 @@ duprun* duprun_initialize(const char* lockname) {
     
     CFMessagePortRef local = CFMessagePortCreateLocal(NULL, kPortName, NULL, &ctx, &shouldFreeInfo);
     if (local == NULL) {
-        // 중복 실행
+        // duplicate execution
         CFRelease(kPortName);
         
         return NULL;
@@ -29,6 +29,7 @@ duprun* duprun_initialize(const char* lockname) {
     
     duprun* obj = (duprun*)malloc(sizeof(duprun));
     if (obj == NULL) {
+        CFRelease(local);
         CFRelease(kPortName);
         
         return NULL;

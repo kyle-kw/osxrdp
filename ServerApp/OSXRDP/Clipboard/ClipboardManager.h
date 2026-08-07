@@ -30,9 +30,9 @@ public:
 private:
     enum PendingClipType {
         PendingClipType_None = 0,
-        PendingClipType_Text,       // 일반 텍스트
-        PendingClipType_RichText,   // 서식있는 텍스트
-        PendingClipType_Image,      // 이미지 (비트맵)
+        PendingClipType_Text,       // Plain text
+        PendingClipType_RichText,   // Rich text
+        PendingClipType_Image,      // Image (bitmap)
         PendingClipType_FileList
     };
 
@@ -45,6 +45,7 @@ private:
     int _pendingTextRetryCount;
     xipc_t* _client;
     int _lastChangeCount;
+    bool _remoteUpdateInProgress;
     int _remoteFileClipEnabled;
     void* _localFileItems;
     void* _remoteFileItems;

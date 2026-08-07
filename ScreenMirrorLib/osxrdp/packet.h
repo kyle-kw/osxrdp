@@ -50,9 +50,9 @@
 #define XRDP_MOUSE_MBTNDOWN     106
 #define XRDP_MOUSE_WHEELUP      107
 #define XRDP_MOUSE_WHEELDOWN    109
-#define XRDP_MOUSE_BBTNUP       115 // 마우스 뒤로가기키 (측면)
+#define XRDP_MOUSE_BBTNUP       115 // mouse back button (side)
 #define XRDP_MOUSE_BBTNDOWN     116
-#define XRDP_MOUSE_FBTNUP       117 // 마우스 앞으로가기키 (측면)
+#define XRDP_MOUSE_FBTNUP       117 // mouse forward button (side)
 #define XRDP_MOUSE_FBTNDOWN     118
 
 #endif

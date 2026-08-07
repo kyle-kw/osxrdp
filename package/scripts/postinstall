@@ -8,6 +8,8 @@
     -keyout /etc/xrdp/key.pem \
     -out  /etc/xrdp/cert.pem \
     -days 3650 -subj "/CN=osxrdp"
+chmod 600 /etc/xrdp/key.pem
+chmod 644 /etc/xrdp/cert.pem
 
 # create log file (xrdp)
 touch /var/log/xrdp.log
@@ -16,7 +18,7 @@ touch /var/log/xrdp.log
 mkdir -p /Library/Logs/osxrdp
 chmod 755 /Library/Logs/osxrdp
 
-# macOS 27 db3? 부터launchd 는 quarantine 된 plist 의 job 실행을 거부하므로 격리 속성 제거
+# From macOS 27 db3?, launchd refuses to run quarantined plists, so remove quarantine attribute
 xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null
 xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist 2>/dev/null
 xattr -d com.apple.quarantine /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null
