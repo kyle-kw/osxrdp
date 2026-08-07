@@ -136,9 +136,12 @@ cp "$SOURCE_DIR/resources/"* "$PAYLOAD_DIR/usr/local/share/xrdp/"
 chmod -R a+rX "$PAYLOAD_DIR"
 chmod 755 "$SCRIPTS_DIR/postinstall"
 
-# Avoid sudo when not available / not needed (GitHub-hosted runners allow sudo).
+# If we chown to root for correct pkg ownership, cleanup must also use sudo
+# (otherwise `rm -rf` fails with Permission denied under set -e).
+USE_SUDO=0
 if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-  sudo chown -R root:wheel "$PAYLOAD_DIR" || true
+  USE_SUDO=1
+  sudo chown -R root:wheel "$PAYLOAD_DIR"
 fi
 
 (
@@ -157,8 +160,13 @@ fi
 )
 
 # Cleanup staging tree (keep the .pkg).
-rm -f "$ROOT/package/$COMPONENT_PKG"
-rm -rf "$PAYLOAD_DIR"
+if [[ "$USE_SUDO" -eq 1 ]]; then
+  sudo rm -f "$ROOT/package/$COMPONENT_PKG"
+  sudo rm -rf "$PAYLOAD_DIR"
+else
+  rm -f "$ROOT/package/$COMPONENT_PKG"
+  rm -rf "$PAYLOAD_DIR"
+fi
 
 echo "=== Done ==="
 echo "Package: $ROOT/package/$OUTPUT_PKG"
