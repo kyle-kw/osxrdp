@@ -1,0 +1,56 @@
+# Option A: compile + package without Developer ID signing / notarization.
+# Artifact is for smoke-testing install paths only; Gatekeeper will block normal double-click install.
+name: Build unsigned package
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-unsigned-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS unsigned pkg
+    # Prefer macos-15 (macos-14 is being deprecated). Deployment target remains 12.4.
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Build unsigned package
+        env:
+          VERSION: "2.0.6"
+          ARCHS: "arm64 x86_64"
+        run: bash package/build_unsigned.sh
+
+      - name: Upload installer package
+        uses: actions/upload-artifact@v4
+        with:
+          name: osxrdp-installer-unsigned
+          path: package/osxrdp_installer_v*_unsigned.pkg
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload built apps (debug convenience)
+        uses: actions/upload-artifact@v4
+        with:
+          name: osxrdp-apps-unsigned
+          path: |
+            package/source/OSXRDP.app
+            package/source/OSXRDPUninstaller.app
+            package/source/module/libosxup.dylib
+          if-no-files-found: error
+          retention-days: 7

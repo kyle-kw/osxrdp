@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#include "../extern_lib/zlog/include/zlog.h"
+#include "../../extern_lib/zlog/include/zlog.h"
 #import <Foundation/Foundation.h>
 
 #if __cplusplus
