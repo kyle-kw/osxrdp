@@ -64,3 +64,24 @@
 "filecopy.alert.show_in_finder" = "Finder에서 보기";
 "filecopy.notify.title" = "OSXRDP";
 "filecopy.notify.body" = "원격 클라이언트의 파일 %ld개를 저장할 수 있습니다.";
+
+
+"statusbar.menu.settings" = "설정...";
+"settings.window.title" = "설정";
+"settings.tab.settings" = "설정";
+"settings.tab.diagnostics" = "진단";
+"settings.autoland.label" = "복사한 파일 자동 저장";
+"settings.autoland.folder_default" = "다운로드";
+"settings.autoland.choose_folder" = "폴더 선택...";
+"settings.framerate.label" = "최대 프레임";
+"settings.codec.label" = "선호 코덱";
+"settings.codec.auto" = "자동";
+"settings.coming_soon" = "준비 중";
+"settings.diag.resolution" = "해상도";
+"settings.diag.codec" = "코덱";
+"settings.diag.framerate" = "프레임";
+"settings.diag.frame_lag" = "프레임 지연";
+"settings.diag.slots_pending" = "슬롯 대기";
+"settings.diag.frames_written" = "전송 프레임";
+"settings.diag.dropped_frames" = "드롭 프레임";
+"settings.button.done" = "완료";

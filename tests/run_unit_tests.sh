@@ -25,6 +25,35 @@ CFLAGS=(
   -I"$ROOT/ScreenMirrorLib/osxrdp"
 )
 
+CXX="${CXX:-clang++}"
+CXXFLAGS=(
+  -std=gnu++20
+  -Wall
+  -Wextra
+  -Wno-unused-parameter
+  -I"$ROOT/tests"
+  -I"$ROOT/ScreenMirrorLib"
+  -I"$ROOT/ScreenMirrorLib/osxrdp"
+  -I"$ROOT/osxup"
+  -I"$ROOT/osxup/xrdp"
+)
+
+OBJCFLAGS=(
+  -x objective-c++
+  -fobjc-arc
+  -std=gnu++20
+  -Wall
+  -Wextra
+  -Wno-unused-parameter
+  -I"$ROOT/tests"
+  -I"$ROOT/ScreenMirrorLib"
+  -I"$ROOT/ScreenMirrorLib/osxrdp"
+  -I"$ROOT/osxup"
+  -I"$ROOT/osxup/xrdp"
+  -I"$ROOT/ServerApp/OSXRDP"
+  -framework Foundation
+)
+
 echo "=== osxrdp unit tests ==="
 echo "CC=$CC"
 echo "OUT=$OUT"
@@ -37,6 +66,36 @@ build_and_run() {
   echo ""
   echo "-- building $name --"
   if ! "$CC" "${CFLAGS[@]}" "$@" -o "$OUT/$name"; then
+    echo "FAIL compile $name"
+    failures=$((failures + 1))
+    return
+  fi
+  if ! "$OUT/$name"; then
+    failures=$((failures + 1))
+  fi
+}
+
+build_and_run_cxx() {
+  local name="$1"
+  shift
+  echo ""
+  echo "-- building $name (C++) --"
+  if ! "$CXX" "${CXXFLAGS[@]}" "$@" -o "$OUT/$name"; then
+    echo "FAIL compile $name"
+    failures=$((failures + 1))
+    return
+  fi
+  if ! "$OUT/$name"; then
+    failures=$((failures + 1))
+  fi
+}
+
+build_and_run_objc() {
+  local name="$1"
+  shift
+  echo ""
+  echo "-- building $name (ObjC++) --"
+  if ! "$CXX" "${OBJCFLAGS[@]}" "$@" -o "$OUT/$name"; then
     echo "FAIL compile $name"
     failures=$((failures + 1))
     return
@@ -59,6 +118,23 @@ build_and_run test_utils_name \
 build_and_run test_xshm_name \
   "$ROOT/tests/test_xshm_name.c" \
   "$ROOT/ScreenMirrorLib/xshm.c"
+
+build_and_run_cxx test_status_manager \
+  "$ROOT/tests/test_status_manager.cpp" \
+  "$ROOT/osxup/Status/StatusManager.cpp"
+
+build_and_run_cxx test_inflight_tracker \
+  "$ROOT/tests/test_inflight_tracker.cpp" \
+  "$ROOT/osxup/Paint/InFlightTracker.cpp"
+
+build_and_run_cxx test_command_packing \
+  "$ROOT/tests/test_command_packing.cpp" \
+  "$ROOT/osxup/Command/Command.cpp" \
+  "$ROOT/ScreenMirrorLib/xstream.c"
+
+build_and_run_objc test_clip_protocol \
+  "$ROOT/tests/test_clip_protocol.mm" \
+  "$ROOT/ServerApp/OSXRDP/Clipboard/ClipProtocol.mm"
 
 echo ""
 echo "-- test_strings.sh --"

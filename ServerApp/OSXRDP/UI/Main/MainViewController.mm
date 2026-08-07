@@ -172,7 +172,16 @@
     } else if (snap.overallState == 2) {
         self.statusHintLabel.stringValue = NSLocalizedString(@"diag.hint.agent_stopped", nil);
     } else if (snap.rdpClientConnected) {
-        self.statusHintLabel.stringValue = NSLocalizedString(@"diag.hint.connected", nil);
+        if (snap.currentWidth > 0) {
+            self.statusHintLabel.stringValue =
+                [NSString stringWithFormat:@"%@  [%dx%d · %@ · lag:%d]",
+                 NSLocalizedString(@"diag.hint.connected", nil),
+                 snap.currentWidth, snap.currentHeight,
+                 snap.currentCodec ? [NSString stringWithUTF8String:snap.currentCodec] : @"",
+                 snap.frameLag];
+        } else {
+            self.statusHintLabel.stringValue = NSLocalizedString(@"diag.hint.connected", nil);
+        }
     } else {
         self.statusHintLabel.stringValue = NSLocalizedString(@"diag.hint.ready", nil);
     }

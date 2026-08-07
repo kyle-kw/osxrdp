@@ -6,6 +6,7 @@
 #include "PaintH264.h"
 #include "PaintRFX.h"
 #include "utils.h"
+#include <unistd.h>
 
 static const char* OSXRDP_SCREENSHM_NAME = "/osxrdpshm";
 static const char* OSXRDP_CURSORSHM_NAME = "/osxrdpcursorshm";
@@ -17,16 +18,13 @@ PaintManager::PaintManager() :
     _cursorShm(NULL),
     _inPainting(false),
     _releasePending(false),
-    _nextFrameGeneration(1),
-    _freeInFlightCount(0),
-    _inFlightHead(0),
-    _inFlightCount(0),
-    _recordShmCnt(0)
+    _recordShmCnt(0),
+    _sessionId(0),
+    _isLockScreen(false)
 {
     for (int i = 0; i < 16; i++) {
         _recordShm[i] = NULL;
         _needPaintDisplay[i] = 0;
-        _inFlightCountByDisplay[i] = 0;
     }
 }
 
@@ -135,8 +133,10 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
     _paint->Initialize(mod);
     
     _mod = mod;
+    _sessionId = sessionId;
+    _isLockScreen = isLockScreen;
     _releasePending = false;
-    ResetInFlight();
+    _inFlightTracker.Reset();
     
     _inited = true;
     
@@ -155,13 +155,30 @@ bool PaintManager::TryReleaseForReconnect() {
 
     _releasePending = true;
 
-    if (_inFlightCount > 0) {
+    if (_inFlightTracker.TotalCount() > 0) {
         return false;
     }
 
     ReleaseResources();
     _releasePending = false;
     return true;
+}
+
+bool PaintManager::ReinitializeForResize() {
+    const struct mod* savedMod = _mod;
+    int savedSessionId = _sessionId;
+    bool savedIsLockScreen = _isLockScreen;
+    int recordFormat = CheckRecordFormat(savedMod);
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        ReleaseResources();
+        if (Initialize(savedMod, recordFormat, savedSessionId, savedIsLockScreen) == true) {
+            return true;
+        }
+        usleep(100 * 1000); // 100ms
+    }
+
+    return false;
 }
 
 void PaintManager::ReleaseResources() {
@@ -190,7 +207,7 @@ void PaintManager::ReleaseResources() {
     }
     
     _mod = NULL;
-    ResetInFlight();
+    _inFlightTracker.Reset();
     _inPainting = false;
     _releasePending = false;
     _inited = false;
@@ -210,7 +227,7 @@ void PaintManager::Paint() {
     // Draw mouse cursor
     PaintMouseCursor();
     
-    if (_inFlightCount >= FRAME_SLOTS * _recordShmCnt) {
+    if (_inFlightTracker.TotalCount() >= FRAME_SLOTS * _recordShmCnt) {
         return;
     }
     
@@ -223,7 +240,7 @@ void PaintManager::Paint() {
 
         // Paint up to 3 times while in-flight capacity is available
         int cnt = 0;
-        while (_inFlightCountByDisplay[i] < FRAME_SLOTS && cnt < 3) {
+        while (_inFlightTracker.CountByDisplay(i) < FRAME_SLOTS && cnt < 3) {
             screenrecord_frame_t* frameInfo = NULL;
             char* imgData = NULL;
             size_t imgDataSize = 0;
@@ -237,10 +254,10 @@ void PaintManager::Paint() {
             }
 
             unsigned int frame_id = 0;
-            if (PushInFlight(i, shm_frame_id, &frame_id) == false) {
+            if (_inFlightTracker.Push(i, shm_frame_id, &frame_id) == false) {
                 break;
             }
-            _inPainting = (_inFlightCount > 0);
+            _inPainting = (_inFlightTracker.TotalCount() > 0);
 
             // Paint
             _paint->DoPaint(_mod, frameInfo, imgData, imgDataSize, frame_id, i, width, height);
@@ -275,7 +292,7 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     }
 
     int forceRedrawAll = 0;
-    int displayInFlightCount = _inFlightCountByDisplay[displayIdx];
+    int displayInFlightCount = _inFlightTracker.CountByDisplay(displayIdx);
     unsigned int targetPos = read_pos + (unsigned int)displayInFlightCount;
     if (targetPos >= write_pos) {
         return false;
@@ -336,106 +353,13 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     return true;
 }
 
-bool PaintManager::PushInFlight(int displayIdx, unsigned int shmReadPos, unsigned int* outFrameId) {
-    if (displayIdx < 0 || displayIdx >= 16) {
-        return false;
-    }
-
-    if (outFrameId == NULL) {
-        return false;
-    }
-
-    if (_freeInFlightCount <= 0) {
-        return false;
-    }
-
-    if (_inFlightCountByDisplay[displayIdx] >= FRAME_SLOTS) {
-        return false;
-    }
-
-    if (_nextFrameGeneration >= 0x7FFFFFFFU / IN_FLIGHT_SLOT_COUNT) {
-        if (_inFlightCount > 0) {
-            return false;
-        }
-        _nextFrameGeneration = 1;
-    }
-
-    int slot = _freeInFlightSlots[--_freeInFlightCount];
-    unsigned int frameId = (_nextFrameGeneration * IN_FLIGHT_SLOT_COUNT) + (unsigned int)slot;
-    _nextFrameGeneration++;
-
-    _inFlightFrames[slot].frameId = frameId;
-    _inFlightFrames[slot].displayIdx = displayIdx;
-    _inFlightFrames[slot].shmReadPos = shmReadPos;
-    _inFlightFrames[slot].inUse = true;
-
-    int tail = (_inFlightHead + _inFlightCount) % IN_FLIGHT_SLOT_COUNT;
-    _inFlightSlotQueue[tail] = slot;
-
-    _inFlightCount++;
-    _inFlightCountByDisplay[displayIdx]++;
-    *outFrameId = frameId;
-    return true;
-}
-
-int PaintManager::PopAckedInFlight(int ackFrameId, unsigned int* outMaxReadPosByDisplay, bool* outHasReadPosByDisplay) {
-    int popped = 0;
-
-    while (_inFlightCount > 0) {
-        int slot = _inFlightSlotQueue[_inFlightHead];
-        InFlightFrame* frame = &_inFlightFrames[slot];
-
-        if (ackFrameId >= 0 && (int)frame->frameId > ackFrameId) {
-            break;
-        }
-
-        int displayIdx = frame->displayIdx;
-        if (displayIdx >= 0 && displayIdx < 16) {
-            if (outMaxReadPosByDisplay != NULL) {
-                outMaxReadPosByDisplay[displayIdx] = frame->shmReadPos;
-            }
-            if (outHasReadPosByDisplay != NULL) {
-                outHasReadPosByDisplay[displayIdx] = true;
-            }
-            if (_inFlightCountByDisplay[displayIdx] > 0) {
-                _inFlightCountByDisplay[displayIdx]--;
-            }
-        }
-
-        frame->inUse = false;
-        _freeInFlightSlots[_freeInFlightCount++] = slot;
-        _inFlightHead = (_inFlightHead + 1) % IN_FLIGHT_SLOT_COUNT;
-        _inFlightCount--;
-        popped++;
-    }
-
-    return popped;
-}
-
-void PaintManager::ResetInFlight() {
-    _freeInFlightCount = IN_FLIGHT_SLOT_COUNT;
-    _inFlightHead = 0;
-    _inFlightCount = 0;
-    for (int i = 0; i < IN_FLIGHT_SLOT_COUNT; i++) {
-        _inFlightFrames[i].frameId = 0;
-        _inFlightFrames[i].displayIdx = 0;
-        _inFlightFrames[i].shmReadPos = 0;
-        _inFlightFrames[i].inUse = false;
-        _inFlightSlotQueue[i] = 0;
-        _freeInFlightSlots[i] = i;
-    }
-    for (int i = 0; i < 16; i++) {
-        _inFlightCountByDisplay[i] = 0;
-    }
-}
-
 void PaintManager::PaintEnd(int ackFrameId) {
     if (_inited == false || _recordShmCnt == 0) {
         _inPainting = false;
         return;
     }
     
-    if (_inFlightCount <= 0) {
+    if (_inFlightTracker.TotalCount() <= 0) {
         _inPainting = false;
         return;
     }
@@ -443,9 +367,9 @@ void PaintManager::PaintEnd(int ackFrameId) {
     unsigned int maxReadPosByDisplay[16] = {0,};
     bool hasReadPosByDisplay[16] = {false,};
 
-    int popped = PopAckedInFlight(ackFrameId, maxReadPosByDisplay, hasReadPosByDisplay);
+    int popped = _inFlightTracker.PopAcked(ackFrameId, maxReadPosByDisplay, hasReadPosByDisplay);
     if (popped <= 0) {
-        _inPainting = (_inFlightCount > 0);
+        _inPainting = (_inFlightTracker.TotalCount() > 0);
         return;
     }
 
@@ -466,7 +390,7 @@ void PaintManager::PaintEnd(int ackFrameId) {
         }
     }
     
-    _inPainting = (_inFlightCount > 0);
+    _inPainting = (_inFlightTracker.TotalCount() > 0);
 }
 
 void PaintManager::PaintMouseCursor() {

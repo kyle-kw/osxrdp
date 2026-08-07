@@ -3,6 +3,7 @@
 
 #include "ipc.h"
 #include "xstream.h"
+#include "ClipProtocol.h"
 #include <pthread.h>
 #include <stdint.h>
 
@@ -45,14 +46,16 @@ public:
     int RemoteFileCount();
     void StartRemoteFileCopy();
     void StartRemoteFileCopyToDownloads();
+    void autoLandRemoteFiles();
 
 private:
+    // Values locked to CLIP_PROTOCOL_TYPE_* in ClipProtocol.h
     enum PendingClipType {
-        PendingClipType_None = 0,
-        PendingClipType_Text,       // Plain text
-        PendingClipType_RichText,   // Rich text
-        PendingClipType_Image,      // Image (bitmap)
-        PendingClipType_FileList
+        PendingClipType_None     = CLIP_PROTOCOL_TYPE_NONE,
+        PendingClipType_Text     = CLIP_PROTOCOL_TYPE_TEXT,
+        PendingClipType_RichText = CLIP_PROTOCOL_TYPE_RICHTEXT,
+        PendingClipType_Image    = CLIP_PROTOCOL_TYPE_IMAGE,
+        PendingClipType_FileList = CLIP_PROTOCOL_TYPE_FILELIST
     };
 
     char* _clipDataBuffer;
@@ -84,9 +87,10 @@ private:
     uint64_t _fileCopyTotalBytes;
     uint64_t _fileCopyTransferredBytes;
     void* _fileCopyWindow;
-    void* _fileCopyCurrentHandle;
     void* _fileCopyCurrentPath;
+    void* _fileCopyCurrentHandle;
     void* _fileCopyDestinationFolder;
+    int _fileCopyAutoInitiated;
 
     pthread_mutex_t _lock;
     pthread_t _monitorThread;

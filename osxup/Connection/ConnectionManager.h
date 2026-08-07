@@ -39,6 +39,16 @@ public:
     
     void Terminate();
     
+    // Forward resolution change to agent (dynamic resize).
+    // Returns false if rejected (already in progress / invalid / send failed).
+    // On false, caller must NOT leave xrdp waiting for server_monitor_resize_done.
+    // Threading: SendResolutionChange (xrdp callback) and REP_SCREENRESIZE handling
+    // (via KeepAlive → xipc_loop_once) both run on the xrdp event thread; no lock.
+    bool SendResolutionChange(int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo);
+    
+    // Adaptive select timeout based on recent frame activity
+    int GetAdaptiveTimeout();
+    
     // Screen painting
     void Paint();
     void PaintEnd(int ackFrameId);
@@ -57,6 +67,27 @@ private:
     xipc_t* _agentIpc;
     int _sessionId;
     const mod* _mod;
+    
+    // Adaptive timeout: last frame activity timestamp (ms, monotonic)
+    long long _lastFrameActivityMs;
+    
+    // Pending async monitor resize request
+    int _pendingResizeWidth;
+    int _pendingResizeHeight;
+    int _pendingResizeMonitorCount;
+    struct monitor_info _pendingResizeMonitors[16];
+    bool _resizeInProgress;
+    // Monotonic ms when _resizeInProgress was set; 0 if idle.
+    long long _resizeStartedMs;
+    
+    void _RecordFrameActivity();
+    // Clear pending resize fields only (no xrdp callback). Use when in_progress was never set.
+    void _ClearResizeState();
+    // If a resize handshake is open, complete it with server_monitor_resize_done then clear.
+    // Required on agent drop so xrdp does not hang and later resizes are not blocked.
+    void _AbortResizeInProgress();
+    // Fail open if agent never replies to REQ_SCREENRESIZE (see kResizeTimeoutMs).
+    void _CheckResizeTimeout();
     
     bool _ConnectToSessionManager();
     bool _ConnectToAgent(int sessionId, bool isLockScreen);

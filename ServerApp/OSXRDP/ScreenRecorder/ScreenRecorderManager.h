@@ -89,6 +89,10 @@ private:
     void DestroyCursorShm();
     
     bool StartRecord(xstream_t* cmd);
+    bool StartRecordWithParams();
+    // Dynamic resize. After any path that destroys+recreates SHM, returns true with
+    // the dimensions actually running so osxup reopens SHM (re=1 wire contract).
+    bool HandleScreenResize(xipc_t* client, xstream_t* cmd);
     
     bool ParseStartRecordParams(xstream_t* cmd, RecordStartParams* params);
     bool PrepareRecordResources();

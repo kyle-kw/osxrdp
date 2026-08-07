@@ -3,6 +3,8 @@
 #import <AppKit/AppKit.h>
 #import <UserNotifications/UserNotifications.h>
 #import "../UI/ProgressDialog/FileCopyWindow.h"
+#import "../Utils/AppConfig.h"
+#include "ClipProtocol.h"
 #include "osxrdp/packet.h"
 #include <stdint.h>
 #include <stdlib.h>
@@ -30,7 +32,7 @@ static const int CB_ASCII_NAMES = 0x0004;
 
 static const int CF_TEXT = 1;
 static const int CF_DIB = 8;
-static const int CF_UNICODETEXT = 13;
+static const int CF_UNICODETEXT = CLIP_PROTOCOL_CF_UNICODETEXT;
 static const int CF_OEMTEXT = 7;
 
 static const int LOCAL_RTF_FORMAT_ID = 0xC001;
@@ -131,13 +133,14 @@ static NSString* FileCopyCurrentPath(void* path) {
 }
 
 uint64_t ClipboardManager::ReadUInt64FromLowHigh(int low, int high) {
-    return (((uint64_t)(uint32_t)high) << 32) | (uint32_t)low;
+    return ClipProtocol_ReadUInt64FromLowHigh((uint32_t)low, (uint32_t)high);
 }
 
 void ClipboardManager::WriteUInt64ToBuffer(unsigned char* buffer, uint64_t value) {
-    for (int i = 0; i < 8; i++) {
-        buffer[i] = (unsigned char)((value >> (i * 8)) & 0xFF);
+    if (buffer == NULL) {
+        return;
     }
+    ClipProtocol_WriteUInt64ToBuffer(buffer, value);
 }
 
 uint64_t ClipboardManager::FileTimeFromDate(NSDate* date) {
@@ -249,18 +252,16 @@ NSString* ClipboardManager::ReadFileDescriptorName(const unsigned char* data, in
 }
 
 bool ClipboardManager::IsSafeRelativeFileName(NSString* fileName) {
-    if (fileName == nil || [fileName length] == 0 || [fileName isAbsolutePath] == YES) {
+    if (fileName == nil || [fileName length] == 0) {
         return false;
     }
 
-    NSArray* components = [fileName componentsSeparatedByCharactersInSet:[NSCharacterSet characterSetWithCharactersInString:@"\\/"]];
-    for (NSString* component in components) {
-        if ([component length] == 0 || [component isEqualToString:@"."] || [component isEqualToString:@".."]) {
-            return false;
-        }
+    const char* path = [fileName UTF8String];
+    if (path == NULL) {
+        return false;
     }
 
-    return true;
+    return ClipProtocol_IsSafeRelativePath(path);
 }
 
 NSURL* ClipboardManager::MakeUniqueChildUrl(NSURL* folderUrl, NSString* fileName) {
@@ -532,9 +533,10 @@ ClipboardManager::ClipboardManager()
 , _fileCopyTotalBytes(0)
 , _fileCopyTransferredBytes(0)
 , _fileCopyWindow(NULL)
-, _fileCopyCurrentHandle(NULL)
 , _fileCopyCurrentPath(NULL)
-, _fileCopyDestinationFolder(NULL) {
+, _fileCopyCurrentHandle(NULL)
+, _fileCopyDestinationFolder(NULL)
+, _fileCopyAutoInitiated(0) {
     pthread_mutex_init(&_lock, NULL);
     _localFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
     _remoteFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
@@ -551,21 +553,7 @@ ClipboardManager::ClipboardManager()
 }
 
 int ClipboardManager::GetRequestedFormatPriority(PendingClipType clipType, int formatId) {
-    switch (clipType) {
-        case PendingClipType_RichText:
-            return 40;
-        case PendingClipType_Image:
-            return 30;
-        case PendingClipType_Text:
-            if (formatId == CF_UNICODETEXT) {
-                return 20;
-            }
-            return 0;
-        default:
-            break;
-    }
-
-    return 0;
+    return ClipProtocol_GetRequestedFormatPriority((int)clipType, formatId);
 }
 
 ClipboardManager::~ClipboardManager() {
@@ -700,6 +688,69 @@ void ClipboardManager::StartRemoteFileCopyToDownloads() {
     });
 }
 
+
+void ClipboardManager::autoLandRemoteFiles() {
+    pthread_mutex_lock(&_lock);
+    bool canStart = _remoteFileClipboardReady != 0 && _fileCopyInProgress == 0 && _fileCopyChoosingFolder == 0;
+    if (canStart) {
+        _fileCopyChoosingFolder = 1;
+    }
+    pthread_mutex_unlock(&_lock);
+
+    if (canStart == false) {
+        return;
+    }
+
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSURL *destUrl = AppConfig.shared.resolvedAutoLandFolderURL;
+        if (destUrl == nil) {
+            // Fall back to manual save notification so files are not silently stranded
+            int availableCount = 0;
+            pthread_mutex_lock(&_lock);
+            _fileCopyChoosingFolder = 0;
+            _fileCopyAutoInitiated = 0;
+            if (_remoteFileClipboardReady != 0) {
+                NSMutableArray* items = RemoteFileItems(_remoteFileItems);
+                availableCount = (int)[items count];
+            }
+            pthread_mutex_unlock(&_lock);
+            if (availableCount <= 0) {
+                availableCount = 1;
+            }
+            NotifyRemoteFilesAvailable(availableCount);
+            return;
+        }
+
+        // Ensure the destination folder exists
+        NSError *error = nil;
+        BOOL created = [[NSFileManager defaultManager] createDirectoryAtURL:destUrl
+                                                   withIntermediateDirectories:YES
+                                                                    attributes:nil
+                                                                         error:&error];
+        if (created == NO) {
+            NSLog(@"[ClipboardManager::autoLandRemoteFiles] failed to create directory: %@", error);
+            int availableCount = 0;
+            pthread_mutex_lock(&_lock);
+            _fileCopyChoosingFolder = 0;
+            _fileCopyAutoInitiated = 0;
+            if (_remoteFileClipboardReady != 0) {
+                NSMutableArray* items = RemoteFileItems(_remoteFileItems);
+                availableCount = (int)[items count];
+            }
+            pthread_mutex_unlock(&_lock);
+            if (availableCount <= 0) {
+                availableCount = 1;
+            }
+            NotifyRemoteFilesAvailable(availableCount);
+            return;
+        }
+
+        pthread_mutex_lock(&_lock);
+        _fileCopyAutoInitiated = 1;
+        pthread_mutex_unlock(&_lock);
+        BeginRemoteFileCopyToFolder(destUrl);
+    });
+}
 // Clipboard event received from client
 void ClipboardManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
     if (client == NULL || cmd == NULL) {
@@ -1958,7 +2009,18 @@ bool ClipboardManager::ParseRemoteFileList(const void* data, int dataLen) {
     pthread_mutex_unlock(&_lock);
 
     if (availableCount > 0) {
-        NotifyRemoteFilesAvailable(availableCount);
+        // Feature #12: auto-land if enabled
+        bool canAutoLand = false;
+        pthread_mutex_lock(&_lock);
+        canAutoLand = _remoteFileClipboardReady != 0 && _fileCopyInProgress == 0 && _fileCopyChoosingFolder == 0;
+        pthread_mutex_unlock(&_lock);
+
+        if ([AppConfig.shared autoLandFiles] && canAutoLand) {
+            autoLandRemoteFiles();
+        }
+        else {
+            NotifyRemoteFilesAvailable(availableCount);
+        }
     }
 
     return availableCount > 0;
@@ -2009,6 +2071,7 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
     if (CheckWritableFolder(folderUrl) == false) {
         pthread_mutex_lock(&_lock);
         _fileCopyChoosingFolder = 0;
+        _fileCopyAutoInitiated = 0;
         pthread_mutex_unlock(&_lock);
         ShowFileCopyResult(FileCopyFinishReason_NotWritable, nil);
         return;
@@ -2017,6 +2080,7 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
     if (PrepareRemoteFileDestinations(folderUrl) == false) {
         pthread_mutex_lock(&_lock);
         _fileCopyChoosingFolder = 0;
+        _fileCopyAutoInitiated = 0;
         pthread_mutex_unlock(&_lock);
         ShowFileCopyResult(FileCopyFinishReason_CreateFailed, nil);
         return;
@@ -2254,6 +2318,7 @@ void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     NSURL* destinationFolder = (_fileCopyDestinationFolder != NULL)
         ? (__bridge NSURL*)_fileCopyDestinationFolder
         : nil;
+    bool wasAutoInitiated = (_fileCopyAutoInitiated != 0);
 
     if (handle != nil) {
         CFRetain((__bridge CFTypeRef)handle);
@@ -2276,6 +2341,7 @@ void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     _fileCopyItemTotal = 0;
     _fileCopyCurrentOffset = 0;
     _fileCopyTransferredBytes = 0;
+    _fileCopyAutoInitiated = 0;
 
     if (_fileCopyCurrentHandle != NULL) {
         CFRelease(_fileCopyCurrentHandle);
@@ -2306,10 +2372,25 @@ void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     }
 
     FileCopyFinishReason finalReason = reason;
+    bool autoInitiated = wasAutoInitiated;
     dispatch_async(dispatch_get_main_queue(), ^{
         [window closeWindow];
-        if (finalReason != FileCopyFinishReason_Cancelled) {
+        // For auto-land success: skip the modal alert, only post notification
+        if (finalReason != FileCopyFinishReason_Cancelled && !(autoInitiated && finalReason == FileCopyFinishReason_Success)) {
             ShowFileCopyResult(finalReason, destinationFolder);
+        }
+        if (autoInitiated && finalReason == FileCopyFinishReason_Success) {
+            // Post informational notification for auto-land completion
+            if (@available(macOS 10.14, *)) {
+                UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+                UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+                content.title = NSLocalizedString(@"filecopy.notify.title", nil);
+                content.body = NSLocalizedString(@"filecopy.alert.success", nil);
+                UNNotificationRequest* request = [UNNotificationRequest requestWithIdentifier:@"osxrdp-autoland-complete"
+                                                                                     content:content
+                                                                                     trigger:nil];
+                [center addNotificationRequest:request withCompletionHandler:nil];
+            }
         }
         if (window != nil) {
             CFRelease((__bridge CFTypeRef)window);

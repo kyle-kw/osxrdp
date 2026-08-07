@@ -1,7 +1,9 @@
 #include "ConnectionDiagnostics.h"
+#include "SessionMetrics.h"
 #include "PermissionCheckUtils.h"
 #include "../RemoteConnection/RemoteConnectionService.h"
 
+#include <stdint.h>
 #include <string.h>
 
 static char g_lastStartErrorKey[128] = {0};
@@ -27,6 +29,12 @@ ConnectionDiagnosticsSnapshot ConnectionDiagnostics::Capture(void) {
     s.rdpClientConnected = IsRemoteRdpClientConnected();
     s.remoteFileCount = GetRemoteClipboardFileCount();
     s.remoteFilesReady = s.remoteFileCount > 0;
+    // Session metrics (feature #11) — codec lives in snapshot-owned buffer.
+    s.currentCodecBuf[0] = '\0';
+    SessionMetricsGetSnapshot(&s.activeDisplayCount, &s.currentWidth, &s.currentHeight,
+                              &s.currentFramerate, s.currentCodecBuf, sizeof(s.currentCodecBuf),
+                              &s.frameLag, &s.totalFramesWritten, &s.droppedFrames);
+    s.currentCodec = s.currentCodecBuf;
     s.lastStartErrorKey = g_lastStartErrorKey[0] != '\0' ? g_lastStartErrorKey : "";
 
     if (s.accessibilityGranted == false || s.screenRecordingGranted == false) {

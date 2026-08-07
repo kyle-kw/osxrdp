@@ -6,6 +6,7 @@
 #import "Clipboard/ClipboardManager.h"
 
 #import "UI/Main/MainWindowController.h"
+#import "UI/Settings/SettingsWindow.h"
 
 
 @interface AppDelegate ()
@@ -14,10 +15,12 @@
     NSMenuItem* _saveCopiedFilesMenuItem;
     NSMenuItem* _saveToDownloadsMenuItem;
     NSMenuItem* _statusMenuItem;
+    NSMenuItem* _settingsMenuItem;
     dispatch_source_t _sigSource;
     NSTimer* _trayRefreshTimer;
 }
 
+@property (strong) SettingsWindow *settingsWindow;
 @property (strong) IBOutlet MainWindowController* mainWindowController;
 
 @end
@@ -94,6 +97,8 @@
 
     _statusMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.status", nil) action:@selector(onStatusMenuClicked) keyEquivalent:@""];
     _statusMenuItem.target = self;
+    _settingsMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.settings", nil) action:@selector(onSettingsMenuClicked) keyEquivalent:@""];
+    _settingsMenuItem.target = self;
 
     [menus addItem:NSMenuItem.separatorItem];
 
@@ -138,6 +143,18 @@
         _saveCopiedFilesMenuItem.title = NSLocalizedString(@"statusbar.menu.save_copied_files", nil);
         _saveToDownloadsMenuItem.title = NSLocalizedString(@"statusbar.menu.save_to_downloads", nil);
     }
+    // Tray tooltip with session metrics (feature #11)
+    if (snap.rdpClientConnected) {
+        NSString *codec = snap.currentCodec ? [NSString stringWithUTF8String:snap.currentCodec] : @"";
+        _trayMenu.button.toolTip = [NSString stringWithFormat:@"%@\n%dx%d · %@ · %d fps\n%@: %d",
+                                    NSLocalizedString(@"statusbar.menu.title", nil),
+                                    snap.currentWidth, snap.currentHeight,
+                                    codec, snap.currentFramerate,
+                                    NSLocalizedString(@"settings.diag.frame_lag", nil),
+                                    snap.frameLag];
+    } else {
+        _trayMenu.button.toolTip = NSLocalizedString(@"statusbar.menu.title", nil);
+    }
 }
 
 - (void)onRemoteFilesAvailable:(NSNotification*)notification {
@@ -161,6 +178,35 @@
 - (void)onStatusMenuClicked {
     // Open the main window status panel only (avoid stacking a duplicate modal alert).
     [self onOpenWindowMenuClicked];
+}
+
+- (void)onSettingsMenuClicked {
+    [NSApp activateIgnoringOtherApps:YES];
+    // Don't stack: if already open, just bring to front
+    if (self.settingsWindow != nil) {
+        NSWindow *existing = [self.settingsWindow window];
+        if (existing != nil && existing.isVisible) {
+            [existing makeKeyAndOrderFront:nil];
+            return;
+        }
+    }
+    NSWindow *host = self.mainWindowController.window;
+    self.settingsWindow = [[SettingsWindow alloc] init];
+    NSWindow *sheet = [self.settingsWindow window];
+    __weak AppDelegate *weakSelf = self;
+    self.settingsWindow.onClose = ^{
+        weakSelf.settingsWindow = nil;
+    };
+    if (host == nil) {
+        [sheet center];
+        [sheet makeKeyAndOrderFront:nil];
+        return;
+    }
+    [host beginSheet:sheet completionHandler:^(NSModalResponse returnCode) {
+        (void)returnCode;
+        // Sheet path: windowWillClose fires onClose first; this is the definitive clear.
+        weakSelf.settingsWindow = nil;
+    }];
 }
 
 - (void)onExitMenuClicked {

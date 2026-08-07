@@ -6,6 +6,7 @@
 #import "ScreenRecorderFallbackImpl.h"
 #import "../VirtualMon/DisplayUtils.h"
 #import <CoreMedia/CoreMedia.h>
+#import "../Utils/SessionMetrics.h"
 #include "utils.h"
 
 #define _ALIGN_DOWN_EVEN(v)   ((v) & ~1)
@@ -67,6 +68,10 @@ bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
         return false;
     }
 
+    return StartRecordWithParams();
+}
+
+bool ScreenRecorderManager::StartRecordWithParams() {
     if (ResolveDisplayForRecorder() == false) {
         return false;
     }
@@ -127,6 +132,83 @@ bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
         _recorder[_recorderCnt] = (__bridge_retained void*)impl;
         _recorderCnt++;
     }
+
+    // Report recording state to metrics (feature #11)
+    unsigned int writePos = 0, readPos = 0;
+    if (_recordShmCnt > 0 && _recordShm[0] != NULL && _recordShm[0]->mem != NULL) {
+        screenrecord_shm_t *shm = (screenrecord_shm_t*)_recordShm[0]->mem;
+        writePos = atomic_load_explicit(&shm->write_pos, memory_order_relaxed);
+        readPos = atomic_load_explicit(&shm->read_pos, memory_order_acquire);
+    }
+    [SessionMetrics.shared updateFromDisplayCount:_recordShmCnt
+                                           width:_recordParams.width
+                                          height:_recordParams.height
+                                        framerate:_recordParams.framerate
+                                     recordFormat:_recordParams.recordFormat
+                                          writePos:writePos
+                                           readPos:readPos];
+
+    return true;
+}
+
+// Contract: whenever this path destroys and recreates SHM (Stop + StartRecordWithParams),
+// the REP must report re=1 with the dimensions actually in use so osxup reopens SHM.
+// Returning re=0 after a successful recreate leaves osxup mapped to the unlinked old
+// object → write_pos never advances → frozen last frame with no error surface.
+bool ScreenRecorderManager::HandleScreenResize(xipc_t* client, xstream_t* cmd) {
+    // Save old params for rollback if resize fails
+    RecordStartParams oldParams;
+    memcpy(&oldParams, &_recordParams, sizeof(RecordStartParams));
+
+    // Parse into a local buffer first — never write a truncated/invalid request
+    // into _recordParams while the existing recorder is still running.
+    RecordStartParams newParams;
+    memset(&newParams, 0x00, sizeof(newParams));
+    if (ParseStartRecordParams(cmd, &newParams) == false) {
+        NSLog(@"[ScreenRecorderManager::HandleScreenResize] invalid resize params");
+        return false;
+    }
+    memcpy(&_recordParams, &newParams, sizeof(RecordStartParams));
+
+    // Tear down existing recorders + virtual display + SHM
+    Stop();
+
+    // Rebuild at new resolution
+    if (StartRecordWithParams() == false) {
+        NSLog(@"[ScreenRecorderManager::HandleScreenResize] failed to start record at new resolution, rolling back");
+        // Restore old params and try to restart at previous resolution
+        memcpy(&_recordParams, &oldParams, sizeof(RecordStartParams));
+        if (StartRecordWithParams() == false) {
+            // Rollback also failed - recording is stopped, must terminate session
+            NSLog(@"[ScreenRecorderManager::HandleScreenResize] rollback also failed, sending terminate");
+            _client = client;
+            SendDisconnectMsgToClient();
+            return false;
+        }
+        // Rollback succeeded: SHM was destroyed and recreated under the same name.
+        // Report re=1 with the restored dimensions so osxup reopens the new SHM
+        // and client_monitor_resize settles on the size that is actually running.
+        _client = client;
+        for (int i = 0; i < _recordShmCnt; i++) {
+            if (_recordShm[i] != NULL && _recordShm[i]->mem != NULL) {
+                screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[i]->mem;
+                atomic_store_explicit(&shm->consumer_request_full, 1, memory_order_release);
+            }
+        }
+        InvalidateRFXCanonical();
+        return true;
+    }
+
+    // Force full first frame on the new SHM
+    for (int i = 0; i < _recordShmCnt; i++) {
+        if (_recordShm[i] != NULL && _recordShm[i]->mem != NULL) {
+            screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[i]->mem;
+            atomic_store_explicit(&shm->consumer_request_full, 1, memory_order_release);
+        }
+    }
+    InvalidateRFXCanonical();
+
+    _client = client;
 
     return true;
 }
@@ -460,6 +542,9 @@ void ScreenRecorderManager::Stop() {
 
     ReleaseRFXCanonical();
     ResetPendingDirty();
+
+    // Clear diagnostics so Settings UI does not show stale resolution/lag after stop
+    [SessionMetrics.shared reset];
 }
 
 void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
@@ -493,6 +578,29 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
             NSLog(@"[ScreenRecorderManager::HandleCommand] stop record");
             
             Stop();
+            break;
+        }
+        case OSXRDP_PACKETTYPE_REQ_SCREENRESIZE: {
+            bool re = HandleScreenResize(client, cmd);
+
+            NSLog(@"[ScreenRecorderManager::HandleCommand] screen resize. result %d", re);
+
+            xstream* result = xstream_create(32);
+            if (result != NULL) {
+                xstream_writeInt32(result, OSXRDP_CMDTYPE_SCREEN);
+                xstream_writeInt32(result, OSXRDP_PACKETTYPE_REP_SCREENRESIZE);
+                xstream_writeInt32(result, re ? 1 : 0);
+                xstream_writeInt32(result, re ? _recordParams.width : 0);
+                xstream_writeInt32(result, re ? _recordParams.height : 0);
+
+                int rawBufferLen = 0;
+                const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
+
+                xipc_send_data(client, rawBuffer, rawBufferLen);
+
+                xstream_free(result);
+            }
+
             break;
         }
         case OSXRDP_PACKETTYPE_MOUSEEVT: {
@@ -543,8 +651,8 @@ bool ScreenRecorderManager::AcquireFrameSlot(screenrecord_shm_t** recordInfoOut,
     unsigned int readPos = atomic_load_explicit(&recordInfo->read_pos, memory_order_acquire);
     unsigned int writePos = atomic_load_explicit(&recordInfo->write_pos, memory_order_relaxed);
 
-    // Drop if too much unconsumed data
     if (writePos - readPos >= FRAME_SLOTS) {
+        [SessionMetrics.shared recordDrop:displayIdx writePos:writePos readPos:readPos];
         return false;
     }
 
@@ -563,6 +671,9 @@ void ScreenRecorderManager::CommitFrameSlot(screenrecord_shm_t* recordInfo, unsi
     }
 
     atomic_store_explicit(&recordInfo->write_pos, writePos + 1, memory_order_release);
+
+    unsigned int readPos = atomic_load_explicit(&recordInfo->read_pos, memory_order_acquire);
+    [SessionMetrics.shared recordCommit:displayIdx writePos:(writePos + 1) readPos:readPos];
 
     SendNeedPaintMsg(displayIdx);
 }

@@ -70,6 +70,64 @@ void Command::SendRecordStopMsg(xipc_t* agentIpc) {
     xstream_free(stream);
 }
 
+bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo) {
+    if (agentIpc == NULL || width <= 0 || height <= 0) {
+        return false;
+    }
+
+    xstream_t* stream = xstream_create(1024);
+    if (stream == NULL) {
+        return false;
+    }
+
+    // Cap at 16 to match ConnectionManager::SendResolutionChange (do not collapse to 1)
+    if (monitorCount > 16) {
+        monitorCount = 16;
+    }
+
+    // Even-align dimensions (odd resolutions cause NV12 encoding issues)
+    width &= ~0x1;
+    height &= ~0x1;
+    if (width <= 0 || height <= 0) {
+        xstream_free(stream);
+        return false;
+    }
+
+    xstream_writeInt32(stream, OSXRDP_CMDTYPE_SCREEN);
+    xstream_writeInt32(stream, OSXRDP_PACKETTYPE_REQ_SCREENRESIZE);
+    xstream_writeInt32(stream, 0);              // display index (unused)
+    xstream_writeInt32(stream, width);
+    xstream_writeInt32(stream, height);
+    xstream_writeInt32(stream, 60);             // fps (unused, agent recomputes)
+    xstream_writeInt32(stream, recordFormat);
+    xstream_writeInt32(stream, useVirtualmon);
+
+    if (monitorCount == 0 || monitorInfo == NULL) {
+        xstream_writeInt32(stream, 1);
+        xstream_writeInt32(stream, 0);
+        xstream_writeInt32(stream, 0);
+        xstream_writeInt32(stream, width);
+        xstream_writeInt32(stream, height);
+        xstream_writeInt32(stream, 1);
+    }
+    else {
+        xstream_writeInt32(stream, monitorCount);
+
+        for (int i = 0; i < monitorCount; i++) {
+            xstream_writeInt32(stream, monitorInfo[i].left);
+            xstream_writeInt32(stream, monitorInfo[i].top);
+            xstream_writeInt32(stream, monitorInfo[i].right);
+            xstream_writeInt32(stream, monitorInfo[i].bottom);
+            xstream_writeInt32(stream, monitorInfo[i].is_primary);
+        }
+    }
+
+    _SendMsg(agentIpc, stream);
+
+    xstream_free(stream);
+    return true;
+}
+
 void Command::SendMouseInputMsg(xipc_t* agentIpc, int inputType, short x, short y) {
     struct {
         int cmdType;

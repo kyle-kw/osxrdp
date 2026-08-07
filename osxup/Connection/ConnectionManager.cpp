@@ -3,12 +3,16 @@
 #include "ConnectionManager.h"
 #include "osxrdp/packet.h"
 #include "utils.h"
+#include <time.h>
+#include <unistd.h>
 
 // Session manager server name
 static const char* OSXRDP_SESSIONMANAGER_NAME = "/tmp/osxrdpsessionmanager";
 static const char* OSXRDP_AGENT_NAME = "/tmp/osxrdp";
 
 static const int OSXRDP_RECONNECT_WAITCNT = 30;
+// If REP_SCREENRESIZE never arrives, complete the xrdp handshake and free the flag.
+static const long long kResizeTimeoutMs = 5000;
 
 namespace {
 inline void AddWaitObject(void* read_objs, int* rcount, int fd) {
@@ -19,6 +23,11 @@ inline void AddWaitObject(void* read_objs, int* rcount, int fd) {
     ((intptr_t*)read_objs)[*rcount] = (intptr_t)fd;
     (*rcount)++;
 }
+
+inline long long NowMs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 ConnectionManager::ConnectionManager() :
@@ -26,7 +35,13 @@ ConnectionManager::ConnectionManager() :
     _sessionIpc(NULL),
     _agentIpc(NULL),
     _sessionId(0),
-    _mod(NULL)
+    _mod(NULL),
+    _lastFrameActivityMs(0),
+    _pendingResizeWidth(0),
+    _pendingResizeHeight(0),
+    _pendingResizeMonitorCount(0),
+    _resizeInProgress(false),
+    _resizeStartedMs(0)
 {}
 
 ConnectionManager::~ConnectionManager() {}
@@ -76,6 +91,39 @@ bool ConnectionManager::Connect(const mod* mod) {
     return true;
 }
 
+void ConnectionManager::_ClearResizeState() {
+    _resizeInProgress = false;
+    _resizeStartedMs = 0;
+    _pendingResizeWidth = 0;
+    _pendingResizeHeight = 0;
+    _pendingResizeMonitorCount = 0;
+}
+
+void ConnectionManager::_AbortResizeInProgress() {
+    if (_resizeInProgress == false) {
+        return;
+    }
+    // Complete the async handshake so xrdp is not left waiting for done.
+    if (_mod != NULL && _mod->server_monitor_resize_done != NULL) {
+        _mod->server_monitor_resize_done((struct mod*)_mod);
+    }
+    _ClearResizeState();
+}
+
+void ConnectionManager::_CheckResizeTimeout() {
+    if (_resizeInProgress == false || _resizeStartedMs == 0) {
+        return;
+    }
+    if (NowMs() - _resizeStartedMs < kResizeTimeoutMs) {
+        return;
+    }
+    if (_mod != NULL) {
+        _mod->server_msg((struct mod*)_mod,
+            "Screen resize timed out waiting for agent; keeping previous resolution.", 0);
+    }
+    _AbortResizeInProgress();
+}
+
 void ConnectionManager::Release() {
     if (_inited == false) return;
     
@@ -91,6 +139,9 @@ void ConnectionManager::Release() {
         xipc_destroy(_sessionIpc);
         _sessionIpc = NULL;
     }
+
+    // Drop any in-flight resize so a later reconnect can accept a new one
+    _AbortResizeInProgress();
     
     _paintManager.Release();
     _channelManager.Release();
@@ -99,6 +150,9 @@ void ConnectionManager::Release() {
 }
 
 void ConnectionManager::KeepAlive() {
+    // Fail open if agent never replies to an in-flight resize
+    _CheckResizeTimeout();
+
     // If connected to agent IPC
     if (_agentIpc != NULL) {
         // Process queued messages
@@ -109,6 +163,8 @@ void ConnectionManager::KeepAlive() {
             // Destroy
             xipc_destroy(_agentIpc);
             _agentIpc = NULL;
+            // REP may never arrive — complete handshake and unblock future resizes
+            _AbortResizeInProgress();
         }
     }
     
@@ -123,6 +179,7 @@ void ConnectionManager::KeepAlive() {
             _sessionIpc = NULL;
             
             // If session IPC is disconnected, terminate connection
+            _AbortResizeInProgress();
             _statusManager.SetStopping();
             
             return;
@@ -133,6 +190,10 @@ void ConnectionManager::KeepAlive() {
     if (_agentIpc == NULL && _statusManager.CheckInitStatus() == false) {
         
         _sessionId = -1;
+        // Ensure flag is clear even if agent was already NULL without going
+        // through the closed==1 path above (e.g. failed connect after request).
+        // Idempotent if already aborted above.
+        _AbortResizeInProgress();
         
         // Painter and cursor manager must be recreated (agent-dependent)
         // However, do not release shared memory until in-flight frame ACKs are done.
@@ -194,7 +255,69 @@ void ConnectionManager::SetSuppress(bool suppress) {
 }
 
 void ConnectionManager::Terminate() {
+    _AbortResizeInProgress();
     _statusManager.SetStopping();
+}
+
+void ConnectionManager::_RecordFrameActivity() {
+    _lastFrameActivityMs = NowMs();
+}
+
+bool ConnectionManager::SendResolutionChange(int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo) {
+    // Reject concurrent resize while one is already in flight
+    if (_resizeInProgress || _agentIpc == NULL) {
+        return false;
+    }
+
+    // Even-align once so pending layout, wire message, and agent SHM all match.
+    width &= ~0x1;
+    height &= ~0x1;
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    // Store pending resize for async completion in REP_SCREENRESIZE handler
+    _pendingResizeWidth = width;
+    _pendingResizeHeight = height;
+    if (monitorInfo != NULL && monitorCount > 0) {
+        int cnt = monitorCount > 16 ? 16 : monitorCount;
+        _pendingResizeMonitorCount = cnt;
+        memcpy(_pendingResizeMonitors, monitorInfo, sizeof(struct monitor_info) * cnt);
+    } else {
+        // Single-monitor / non-multimon path: synthesize one primary monitor
+        // so xrdp client_monitor_resize still receives a layout on success.
+        _pendingResizeMonitorCount = 1;
+        memset(&_pendingResizeMonitors[0], 0, sizeof(_pendingResizeMonitors[0]));
+        _pendingResizeMonitors[0].left = 0;
+        _pendingResizeMonitors[0].top = 0;
+        _pendingResizeMonitors[0].right = width;
+        _pendingResizeMonitors[0].bottom = height;
+        _pendingResizeMonitors[0].is_primary = 1;
+    }
+
+    _resizeInProgress = true;
+    _resizeStartedMs = NowMs();
+    if (_command.SendScreenResizeMsg(_agentIpc, width, height, recordFormat, useVirtualmon,
+                                     _pendingResizeMonitorCount, _pendingResizeMonitors) == false) {
+        _ClearResizeState();
+        return false;
+    }
+    return true;
+}
+
+int ConnectionManager::GetAdaptiveTimeout() {
+    // While a resize is in flight, wake often enough to honor kResizeTimeoutMs promptly.
+    if (_resizeInProgress) {
+        return 50;
+    }
+    if (_lastFrameActivityMs == 0) {
+        return 100;
+    }
+    long long now = NowMs();
+    if (now - _lastFrameActivityMs < 500) {
+        return 10; // Active streaming: short timeout for fast backlog drain
+    }
+    return 100; // Idle: long timeout to avoid busy-wake
 }
 
 void ConnectionManager::Paint() {    
@@ -203,6 +326,7 @@ void ConnectionManager::Paint() {
 
 void ConnectionManager::PaintEnd(int ackFrameId) {
     _paintManager.PaintEnd(ackFrameId);
+    _RecordFrameActivity();
 }
 
 void ConnectionManager::HandleChannelMsg(long param1, long param2, long param3, long param4) {
@@ -406,6 +530,7 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
             int displayIdx = xstream_readInt32(stream);
             
             _this->_paintManager.PreparePaint(displayIdx);
+            _this->_RecordFrameActivity();
             
             break;
         }
@@ -416,6 +541,59 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
                 if (re != 1 || _this->_PreparePaint() == false) {
                     // log
                     _this->_statusManager.SetStopping();
+                }
+            }
+            else if (packetType == OSXRDP_PACKETTYPE_REP_SCREENRESIZE) {
+                int re = xstream_readInt32(stream);
+                int newWidth = xstream_readInt32(stream);
+                int newHeight = xstream_readInt32(stream);
+
+                if (re == 1) {
+                    // Update mod dimensions
+                    ((struct mod*)_this->_mod)->width = newWidth;
+                    ((struct mod*)_this->_mod)->height = newHeight;
+
+                    // Re-initialize PaintManager at new resolution (re-opens SHM)
+                    if (_this->_paintManager.ReinitializeForResize() == false) {
+                        _this->_mod->server_msg((struct mod*)_this->_mod, "Screen resize failed: could not reinitialize paint manager.", 0);
+                        _this->_statusManager.SetStopping();
+                    }
+                }
+                else {
+                    _this->_mod->server_msg((struct mod*)_this->_mod, "Screen resize failed: agent rejected resize.", 0);
+                }
+
+                // Complete the async resize handshake with xrdp
+                if (_this->_resizeInProgress) {
+                    if (re == 1) {
+                        // Prefer agent-reported even-aligned size for the client layout.
+                        int layoutW = (newWidth > 0) ? newWidth : _this->_pendingResizeWidth;
+                        int layoutH = (newHeight > 0) ? newHeight : _this->_pendingResizeHeight;
+                        layoutW &= ~0x1;
+                        layoutH &= ~0x1;
+
+                        int monCount = _this->_pendingResizeMonitorCount;
+                        if (monCount <= 0) {
+                            monCount = 1;
+                            memset(&_this->_pendingResizeMonitors[0], 0, sizeof(_this->_pendingResizeMonitors[0]));
+                            _this->_pendingResizeMonitors[0].left = 0;
+                            _this->_pendingResizeMonitors[0].top = 0;
+                            _this->_pendingResizeMonitors[0].is_primary = 1;
+                        }
+                        // Keep a single primary full-session monitor consistent with layout size.
+                        if (monCount == 1 &&
+                            _this->_pendingResizeMonitors[0].left == 0 &&
+                            _this->_pendingResizeMonitors[0].top == 0) {
+                            _this->_pendingResizeMonitors[0].right = layoutW;
+                            _this->_pendingResizeMonitors[0].bottom = layoutH;
+                        }
+
+                        _this->_mod->client_monitor_resize((struct mod*)_this->_mod,
+                            layoutW, layoutH,
+                            monCount, _this->_pendingResizeMonitors);
+                    }
+                    _this->_mod->server_monitor_resize_done((struct mod*)_this->_mod);
+                    _this->_resizeInProgress = false;
                 }
             }
             break;

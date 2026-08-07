@@ -213,7 +213,7 @@ lib_mod_get_wait_objs(struct mod *mod, void *read_objs, int *rcount,
 {
     mod->connectionManager->GetWaitObjects(read_objs, rcount);
 
-    *timeout = 100;
+    *timeout = mod->connectionManager->GetAdaptiveTimeout();
     
     return 0;
 }
@@ -281,6 +281,25 @@ lib_send_server_monitor_resize(struct mod *mod, int width, int height,
                                const struct monitor_info *monitors,
                                int *in_progress)
 {
+    if (mod->connectionManager == NULL || mod->connectionManager->CanPaint() == false) {
+        // Cannot resize mid-reconnect - tell xrdp immediately
+        if (in_progress != NULL) {
+            *in_progress = 0;
+        }
+        return 0;
+    }
+
+    int recordFormat = PaintManager::CheckRecordFormat(mod);
+    bool accepted = mod->connectionManager->SendResolutionChange(
+        width, height, recordFormat, mod->usevirtualmon, num_monitors,
+        monitors);
+
+    // Async resize: xrdp waits for server_monitor_resize_done() only when accepted.
+    // Concurrent reject / send failure must not leave xrdp hanging on in_progress.
+    if (in_progress != NULL) {
+        *in_progress = accepted ? 1 : 0;
+    }
+
     return 0;
 }
 

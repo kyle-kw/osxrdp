@@ -1,6 +1,8 @@
 #ifndef ConnectionDiagnostics_h
 #define ConnectionDiagnostics_h
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 
 struct ConnectionDiagnosticsSnapshot {
@@ -13,6 +15,16 @@ struct ConnectionDiagnosticsSnapshot {
     // 0=ok, 1=missing_permissions, 2=agent_stopped, 3=start_failed
     int overallState;
     const char* lastStartErrorKey; // localization key or empty
+    // Session metrics (feature #11)
+    int activeDisplayCount;
+    int currentWidth;
+    int currentHeight;
+    int currentFramerate;
+    char currentCodecBuf[32];
+    const char* currentCodec; // points at currentCodecBuf (or empty string)
+    int frameLag;
+    uint64_t totalFramesWritten;
+    uint64_t droppedFrames;
 };
 
 class ConnectionDiagnostics {

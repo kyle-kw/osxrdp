@@ -2,6 +2,7 @@
 #define PaintManager_h
 
 #include "PaintBase.h"
+#include "InFlightTracker.h"
 #include "osxrdp/screenrecordshm.h"
 #include "xshm.h"
 
@@ -16,6 +17,7 @@ public:
     int Initialize(const struct mod* mod, int recordFormat, int sessionId, bool isLockScreen);
     void Release();
     bool TryReleaseForReconnect();
+    bool ReinitializeForResize();
     
     void Paint();
     void PaintEnd(int ackFrameId);
@@ -29,15 +31,6 @@ public:
     static int CheckRecordFormat(const struct mod* mod);
     
 private:
-    static const int IN_FLIGHT_SLOT_COUNT = FRAME_SLOTS * 16;
-
-    struct InFlightFrame {
-        unsigned int frameId;
-        int displayIdx;
-        unsigned int shmReadPos;
-        bool inUse;
-    };
-
     bool _inited;
     PaintBase* _paint;
     
@@ -48,21 +41,13 @@ private:
     const struct mod* _mod;
     volatile bool _inPainting;
     volatile bool _releasePending;
-    unsigned int _nextFrameGeneration;
 
-    InFlightFrame _inFlightFrames[IN_FLIGHT_SLOT_COUNT];
-    int _inFlightSlotQueue[IN_FLIGHT_SLOT_COUNT];
-    int _freeInFlightSlots[IN_FLIGHT_SLOT_COUNT];
-    int _freeInFlightCount;
-    int _inFlightCountByDisplay[16];
-    int _inFlightHead;
-    int _inFlightCount;
+    InFlightTracker _inFlightTracker;
+    int _sessionId;
     int _needPaintDisplay[16];
+    bool _isLockScreen;
     
     bool GetPaintData(screenrecord_frame_t** outFrameInfo, char** outImgData, size_t* outImgDataSize, int* outWidth, int* outHeight, unsigned int* frame_id, int displayIdx);
-    bool PushInFlight(int displayIdx, unsigned int shmReadPos, unsigned int* outFrameId);
-    int PopAckedInFlight(int ackFrameId, unsigned int* outMaxReadPosByDisplay, bool* outHasReadPosByDisplay);
-    void ResetInFlight();
     void ReleaseResources();
     
     void PaintMouseCursor();

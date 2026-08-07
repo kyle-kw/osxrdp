@@ -13,6 +13,8 @@ public:
     
     void SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, struct monitor_info* monitorInfo);
     void SendRecordStopMsg(xipc_t* agentIpc);
+    // Returns false if the message could not be allocated/sent.
+    bool SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo);
     
     void SendMouseInputMsg(xipc_t* agentIpc, int inputType, short x, short y);
     void SendKeyboardInputMsg(xipc_t* agentIpc, int inputType, int keycode, int flags);

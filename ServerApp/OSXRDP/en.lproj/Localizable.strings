@@ -64,3 +64,24 @@
 "filecopy.alert.show_in_finder" = "Show in Finder";
 "filecopy.notify.title" = "OSXRDP";
 "filecopy.notify.body" = "%ld file(s) from the remote client are ready to save.";
+
+
+"statusbar.menu.settings" = "Settings...";
+"settings.window.title" = "Settings";
+"settings.tab.settings" = "Settings";
+"settings.tab.diagnostics" = "Diagnostics";
+"settings.autoland.label" = "Automatically save copied files";
+"settings.autoland.folder_default" = "Downloads";
+"settings.autoland.choose_folder" = "Choose Folder...";
+"settings.framerate.label" = "Max Framerate";
+"settings.codec.label" = "Preferred Codec";
+"settings.codec.auto" = "Automatic";
+"settings.coming_soon" = "Coming soon";
+"settings.diag.resolution" = "Resolution";
+"settings.diag.codec" = "Codec";
+"settings.diag.framerate" = "Framerate";
+"settings.diag.frame_lag" = "Frame Lag";
+"settings.diag.slots_pending" = "slots pending";
+"settings.diag.frames_written" = "Frames Written";
+"settings.diag.dropped_frames" = "Dropped Frames";
+"settings.button.done" = "Done";
