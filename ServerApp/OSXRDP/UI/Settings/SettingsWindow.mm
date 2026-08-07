@@ -1,7 +1,7 @@
 #import "SettingsWindow.h"
-#import "../Utils/AppConfig.h"
-#import "../Utils/ConnectionDiagnostics.h"
-#import "../Utils/SessionMetrics.h"
+#import "../../Utils/AppConfig.h"
+#import "../../Utils/ConnectionDiagnostics.h"
+#import "../../Utils/SessionMetrics.h"
 
 @interface SettingsWindow ()
 
