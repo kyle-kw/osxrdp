@@ -4,8 +4,6 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-@class ScreenRecorderManager;
-
 @interface SessionMetrics : NSObject
 
 @property (class, readonly, strong) SessionMetrics *shared;
