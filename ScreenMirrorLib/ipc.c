@@ -10,6 +10,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <limits.h>
 #include <Security/Security.h>
 
 #define MAX_CONNECTION 512
@@ -317,6 +318,86 @@ int xipc_get_peer_pid(xipc_t* client, pid_t* pid)
     return 0;
 }
 
+static int xipc_copy_code_for_pid(pid_t pid, SecCodeRef* outCode)
+{
+    if (outCode == NULL || pid <= 0)
+    {
+        return EINVAL;
+    }
+
+    *outCode = NULL;
+
+    CFNumberRef pidNumber = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &pid);
+    if (pidNumber == NULL)
+    {
+        return -1;
+    }
+
+    const void* keys[] = { kSecGuestAttributePid };
+    const void* values[] = { pidNumber };
+    CFDictionaryRef attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFRelease(pidNumber);
+    if (attributes == NULL)
+    {
+        return -1;
+    }
+
+    OSStatus status = SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, outCode);
+    CFRelease(attributes);
+    return status == errSecSuccess ? 0 : -1;
+}
+
+static int xipc_path_is_trusted_xrdp(const char* path)
+{
+    static const char* kTrustedExactPaths[] = {
+        "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/xrdp",
+        NULL
+    };
+    static const char* kTrustedSuffix = "/OSXRDP.app/Contents/MacOS/xrdp";
+
+    if (path == NULL || path[0] == '\0')
+    {
+        return 0;
+    }
+
+    for (int i = 0; kTrustedExactPaths[i] != NULL; i++)
+    {
+        if (strcmp(path, kTrustedExactPaths[i]) == 0)
+        {
+            return 1;
+        }
+    }
+
+    size_t pathLen = strlen(path);
+    size_t suffixLen = strlen(kTrustedSuffix);
+    if (pathLen >= suffixLen && strcmp(path + pathLen - suffixLen, kTrustedSuffix) == 0)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int xipc_get_main_executable_path(SecCodeRef code, char* outPath, size_t outPathSize)
+{
+    if (code == NULL || outPath == NULL || outPathSize == 0)
+    {
+        return -1;
+    }
+
+    outPath[0] = '\0';
+
+    CFURLRef pathUrl = NULL;
+    if (SecCodeCopyPath(code, kSecCSDefaultFlags, &pathUrl) != errSecSuccess || pathUrl == NULL)
+    {
+        return -1;
+    }
+
+    Boolean ok = CFURLGetFileSystemRepresentation(pathUrl, true, (UInt8*)outPath, (CFIndex)outPathSize);
+    CFRelease(pathUrl);
+    return ok ? 0 : -1;
+}
+
 int xipc_is_client_signed_by(xipc_t* client, const char* expectedTeamId, const char* expectedSigningIdentifier)
 {
     if (client == NULL || expectedTeamId == NULL || expectedSigningIdentifier == NULL)
@@ -331,26 +412,10 @@ int xipc_is_client_signed_by(xipc_t* client, const char* expectedTeamId, const c
     }
 
     int result = -1;
-    CFNumberRef pidNumber = NULL;
-    CFDictionaryRef attributes = NULL;
     SecCodeRef peerCode = NULL;
     CFDictionaryRef signingInfo = NULL;
 
-    pidNumber = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &peerPid);
-    if (pidNumber == NULL)
-    {
-        goto cleanup;
-    }
-
-    const void* keys[] = { kSecGuestAttributePid };
-    const void* values[] = { pidNumber };
-    attributes = CFDictionaryCreate(kCFAllocatorDefault, keys, values, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
-    if (attributes == NULL)
-    {
-        goto cleanup;
-    }
-
-    if (SecCodeCopyGuestWithAttributes(NULL, attributes, kSecCSDefaultFlags, &peerCode) != errSecSuccess)
+    if (xipc_copy_code_for_pid(peerPid, &peerCode) != 0)
     {
         goto cleanup;
     }
@@ -400,14 +465,116 @@ cleanup:
         CFRelease(peerCode);
     }
 
-    if (attributes != NULL)
+    return result;
+}
+
+int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, const char* expectedSigningIdentifier)
+{
+    if (client == NULL || expectedSigningIdentifier == NULL)
     {
-        CFRelease(attributes);
+        return EINVAL;
     }
 
-    if (pidNumber != NULL)
+    pid_t peerPid = 0;
+    if (xipc_get_peer_pid(client, &peerPid) != 0)
     {
-        CFRelease(pidNumber);
+        return -1;
+    }
+
+    int result = -1;
+    SecCodeRef peerCode = NULL;
+    SecCodeRef selfCode = NULL;
+    CFDictionaryRef peerInfo = NULL;
+    CFDictionaryRef selfInfo = NULL;
+    char peerPath[PATH_MAX] = {0};
+
+    if (xipc_copy_code_for_pid(peerPid, &peerCode) != 0)
+    {
+        goto cleanup;
+    }
+
+    if (SecCodeCheckValidity(peerCode, kSecCSDefaultFlags, NULL) != errSecSuccess)
+    {
+        goto cleanup;
+    }
+
+    if (SecCodeCopySigningInformation(peerCode, kSecCSSigningInformation, &peerInfo) != errSecSuccess || peerInfo == NULL)
+    {
+        goto cleanup;
+    }
+
+    CFStringRef peerIdentifier = CFDictionaryGetValue(peerInfo, kSecCodeInfoIdentifier);
+    if (peerIdentifier == NULL || CFGetTypeID(peerIdentifier) != CFStringGetTypeID())
+    {
+        goto cleanup;
+    }
+
+    /* Identifier must match exactly (build scripts force -i xrdp for ad-hoc). */
+    if (cfstring_equals_cstring(peerIdentifier, expectedSigningIdentifier) == 0)
+    {
+        goto cleanup;
+    }
+
+    CFStringRef peerTeamId = CFDictionaryGetValue(peerInfo, kSecCodeInfoTeamIdentifier);
+    if (peerTeamId != NULL && CFGetTypeID(peerTeamId) != CFStringGetTypeID())
+    {
+        peerTeamId = NULL;
+    }
+
+    /* 1) Official Developer ID release. */
+    if (officialTeamId != NULL && peerTeamId != NULL &&
+        cfstring_equals_cstring(peerTeamId, officialTeamId) != 0)
+    {
+        result = 0;
+        goto cleanup;
+    }
+
+    /* 2) Same team as this process (local Developer ID / Apple Development builds). */
+    if (SecCodeCopySelf(kSecCSDefaultFlags, &selfCode) == errSecSuccess && selfCode != NULL)
+    {
+        if (SecCodeCopySigningInformation(selfCode, kSecCSSigningInformation, &selfInfo) == errSecSuccess && selfInfo != NULL)
+        {
+            CFStringRef selfTeamId = CFDictionaryGetValue(selfInfo, kSecCodeInfoTeamIdentifier);
+            if (selfTeamId != NULL && CFGetTypeID(selfTeamId) == CFStringGetTypeID() &&
+                peerTeamId != NULL &&
+                CFStringCompare(peerTeamId, selfTeamId, 0) == kCFCompareEqualTo)
+            {
+                result = 0;
+                goto cleanup;
+            }
+        }
+    }
+
+    /* 3) Local ad-hoc install: no Team ID on peer, path must be the shipped xrdp. */
+    if (peerTeamId == NULL)
+    {
+        if (xipc_get_main_executable_path(peerCode, peerPath, sizeof(peerPath)) == 0 &&
+            xipc_path_is_trusted_xrdp(peerPath) != 0)
+        {
+            result = 0;
+            goto cleanup;
+        }
+    }
+
+cleanup:
+    if (selfInfo != NULL)
+    {
+        CFRelease(selfInfo);
+    }
+
+    if (selfCode != NULL)
+    {
+        CFRelease(selfCode);
+    }
+
+    if (peerInfo != NULL)
+    {
+        CFRelease(peerInfo);
+    }
+
+    if (peerCode != NULL)
+    {
+        CFRelease(peerCode);
     }
 
     return result;

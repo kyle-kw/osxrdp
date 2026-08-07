@@ -236,7 +236,9 @@ int SessionManagerServer::OnClientAuthorize(xipc_t* t, xipc_t* client) {
 #if DEBUG
     return 0;
 #else
-    return xipc_is_client_signed_by(client, kTrustedClientTeamId, kTrustedClientSigningIdentifier);
+    // Accept official Team ID, same-team local Developer signing, or ad-hoc
+    // xrdp installed under /Applications/osxrdp (see xipc_is_trusted_xrdp_client).
+    return xipc_is_trusted_xrdp_client(client, kTrustedClientTeamId, kTrustedClientSigningIdentifier);
 #endif
 }
 
@@ -245,7 +247,8 @@ int SessionManagerServer::OnClientRejected(xipc_t* t, xipc_t* client) {
 
     pid_t peerPid = 0;
     if (xipc_get_peer_pid(client, &peerPid) == 0) {
-        dzlog_error("[SessionManagerServer::OnClientRejected] rejected unauthorized client pid=%d", (int)peerPid);
+        dzlog_error("[SessionManagerServer::OnClientRejected] rejected unauthorized client pid=%d (need signed xrdp with id=%s team=%s or ad-hoc under /Applications/osxrdp)",
+                    (int)peerPid, kTrustedClientSigningIdentifier, kTrustedClientTeamId);
     }
     else {
         dzlog_error("[SessionManagerServer::OnClientRejected] rejected unauthorized client");

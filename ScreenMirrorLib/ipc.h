@@ -60,6 +60,10 @@ int xipc_create_server(xipc_t* ipc, const char* path, xipc_client_onconnected on
 int xipc_connect_server(xipc_t* ipc, const char* path);
 int xipc_get_peer_pid(xipc_t* client, pid_t* pid);
 int xipc_is_client_signed_by(xipc_t* client, const char* expectedTeamId, const char* expectedSigningIdentifier);
+/* Trust xrdp clients signed by officialTeamId, the same team as this process,
+ * or (for local ad-hoc builds) a valid ad-hoc signature with the expected
+ * identifier under a trusted install path. Returns 0 if trusted. */
+int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, const char* expectedSigningIdentifier);
 
 int xipc_send_data(xipc_t* ipc, const void* data, int len);
 void xipc_loop(xipc_t* ipc);
