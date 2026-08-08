@@ -163,6 +163,11 @@ build_and_run_cxx test_connection_state \
   "$ROOT/tests/test_connection_state.cpp" \
   "$ROOT/ServerApp/OSXRDP/Utils/ConnectionState.cpp"
 
+build_and_run_objc test_inset_card_view \
+  "$ROOT/tests/test_inset_card_view.mm" \
+  "$ROOT/ServerApp/OSXRDP/UI/InsetCardView.m" \
+  -framework AppKit
+
 build_and_run_objc test_clip_protocol \
   "$ROOT/tests/test_clip_protocol.mm" \
   "$ROOT/ServerApp/OSXRDP/Clipboard/ClipProtocol.mm"

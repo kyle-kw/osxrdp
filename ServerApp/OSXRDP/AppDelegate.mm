@@ -77,6 +77,14 @@
     (void)notification;
 }
 
+- (BOOL)applicationShouldHandleReopen:(NSApplication *)application
+                    hasVisibleWindows:(BOOL)hasVisibleWindows {
+    [self onOpenDashboardMenuClicked];
+    (void)application;
+    (void)hasVisibleWindows;
+    return YES;
+}
+
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app {
     (void)app;
     return NO;

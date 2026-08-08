@@ -3,6 +3,7 @@
 #include "../../Startup/StartupManager.h"
 #include "../../Utils/ConnectionStatusCoordinator.h"
 #import "../../Utils/AppConfig.h"
+#import "../InsetCardView.h"
 
 @interface SettingsWindow ()
 
@@ -27,7 +28,7 @@
 
 @implementation SettingsWindow
 
-- (void)loadWindow {
+- (instancetype)init {
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 460)
                                                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                     backing:NSBackingStoreBuffered
@@ -35,12 +36,13 @@
     window.title = NSLocalizedString(@"settings.window.title", nil);
     window.minSize = NSMakeSize(500.0, 430.0);
     window.releasedWhenClosed = NO;
-    self.window = window;
-}
 
-- (void)windowDidLoad {
-    [super windowDidLoad];
-    self.window.delegate = self;
+    self = [super initWithWindow:window];
+    if (self == nil) {
+        return nil;
+    }
+
+    window.delegate = self;
     [self buildUI];
     [self loadSettings];
     [self refreshDiagnostics];
@@ -48,6 +50,7 @@
                                              selector:@selector(connectionStatusDidChange:)
                                                  name:OSXRDPConnectionStatusDidChangeNotification
                                                object:ConnectionStatusCoordinator.shared];
+    return self;
 }
 
 - (void)dealloc {
@@ -129,7 +132,7 @@
     startupRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     startupRow.alignment = NSLayoutAttributeCenterY;
     [startupText setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-    NSBox *startupCard = [self cardWithContentView:startupRow];
+    InsetCardView *startupCard = [self cardWithContentView:startupRow];
 
     NSTextField *clipboardTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.files.title", nil)];
     clipboardTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
@@ -169,7 +172,7 @@
     fileStack.alignment = NSLayoutAttributeLeading;
     fileStack.spacing = 16.0;
     [destinationRow.widthAnchor constraintEqualToAnchor:fileStack.widthAnchor].active = YES;
-    NSBox *fileCard = [self cardWithContentView:fileStack];
+    InsetCardView *fileCard = [self cardWithContentView:fileStack];
 
     NSStackView *root = [NSStackView stackViewWithViews:@[startupCard, fileCard]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
@@ -225,15 +228,10 @@
     return view;
 }
 
-- (NSBox *)cardWithContentView:(NSView *)contentView {
-    NSBox *box = [[NSBox alloc] init];
-    box.boxType = NSBoxCustom;
-    box.borderWidth = 0.0;
-    box.fillColor = NSColor.controlBackgroundColor;
-    box.cornerRadius = 10.0;
-    box.contentViewMargins = NSMakeSize(16.0, 14.0);
-    box.contentView = contentView;
-    return box;
+- (InsetCardView *)cardWithContentView:(NSView *)contentView {
+    return [[InsetCardView alloc] initWithContentView:contentView
+                                          edgeInsets:NSEdgeInsetsMake(14.0, 16.0, 14.0, 16.0)
+                                         cornerRadius:10.0];
 }
 
 - (NSTextField *)diagnosticValue:(NSTextField * __strong *)target {
@@ -386,18 +384,32 @@
 - (void)refreshDiagnostics {
     ConnectionDiagnosticsSnapshot snap = [ConnectionStatusCoordinator.shared currentSnapshot];
     BOOL connected = snap.rdpClientConnected;
-    self.diagResolutionLabel.stringValue = connected && snap.currentWidth > 0
+    if (!connected) {
+        for (NSTextField *label in @[
+            self.diagResolutionLabel,
+            self.diagCodecLabel,
+            self.diagFramerateLabel,
+            self.diagFrameLagLabel,
+            self.diagFramesWrittenLabel,
+            self.diagDroppedFramesLabel,
+            self.diagCopyFailuresLabel,
+            self.diagRFXFullRedrawLabel,
+            self.diagIMETimeoutsLabel,
+        ]) {
+            label.stringValue = @"—";
+        }
+        return;
+    }
+
+    self.diagResolutionLabel.stringValue = snap.currentWidth > 0
         ? [NSString stringWithFormat:@"%d × %d", snap.currentWidth, snap.currentHeight]
         : @"—";
-    self.diagCodecLabel.stringValue = connected && snap.currentCodecBuf[0] != '\0'
+    self.diagCodecLabel.stringValue = snap.currentCodecBuf[0] != '\0'
         ? [NSString stringWithUTF8String:snap.currentCodecBuf]
         : @"—";
-    self.diagFramerateLabel.stringValue = connected
-        ? [NSString stringWithFormat:@"%d fps", snap.currentFramerate]
-        : @"—";
-    self.diagFrameLagLabel.stringValue = connected
-        ? [NSString stringWithFormat:@"%d %@", snap.frameLag, NSLocalizedString(@"settings.diag.slots_pending", nil)]
-        : @"—";
+    self.diagFramerateLabel.stringValue = [NSString stringWithFormat:@"%d fps", snap.currentFramerate];
+    self.diagFrameLagLabel.stringValue =
+        [NSString stringWithFormat:@"%d %@", snap.frameLag, NSLocalizedString(@"settings.diag.slots_pending", nil)];
     self.diagFramesWrittenLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.totalFramesWritten];
     self.diagDroppedFramesLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.droppedFrames];
     self.diagCopyFailuresLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.copyFailures];

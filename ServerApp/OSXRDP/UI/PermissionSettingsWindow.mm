@@ -2,6 +2,7 @@
 
 #include "../Utils/ConnectionStatusCoordinator.h"
 #include "../Utils/PermissionCheckUtils.h"
+#import "InsetCardView.h"
 
 @interface PermissionSettingsWindow ()
 
@@ -17,25 +18,27 @@
 
 @implementation PermissionSettingsWindow
 
-- (void)loadWindow {
+- (instancetype)init {
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 320)
                                                   styleMask:NSWindowStyleMaskTitled
                                                     backing:NSBackingStoreBuffered
                                                       defer:NO];
     window.title = NSLocalizedString(@"permission.window.title", nil);
     window.releasedWhenClosed = NO;
-    self.window = window;
-}
 
-- (void)windowDidLoad {
-    [super windowDidLoad];
+    self = [super initWithWindow:window];
+    if (self == nil) {
+        return nil;
+    }
+
     [self buildUI];
-    self.window.delegate = self;
+    window.delegate = self;
     [[NSNotificationCenter defaultCenter] addObserver:self
                                              selector:@selector(connectionStatusDidChange:)
                                                  name:OSXRDPConnectionStatusDidChangeNotification
                                                object:ConnectionStatusCoordinator.shared];
     [self refreshPermissionStatus];
+    return self;
 }
 
 - (void)dealloc {
@@ -49,20 +52,20 @@
     intro.textColor = NSColor.secondaryLabelColor;
     intro.font = [NSFont systemFontOfSize:12.0];
 
-    NSBox *accessibilityRow = [self permissionRowWithTitle:NSLocalizedString(@"permission.label.accessibility", nil)
-                                                    detail:NSLocalizedString(@"permission.detail.accessibility", nil)
-                                                  iconView:&_accessibilityIconView
-                                               statusLabel:&_accessibilityStatusLabel
-                                                grantButton:&_accessibilityGrantButton
-                                               grantAction:@selector(grantAccessibilityClicked:)
-                                             settingsAction:@selector(openAccessibilitySettingsClicked:)];
-    NSBox *screenRow = [self permissionRowWithTitle:NSLocalizedString(@"permission.label.screen_record", nil)
-                                             detail:NSLocalizedString(@"permission.detail.screen_record", nil)
-                                           iconView:&_screenRecordingIconView
-                                        statusLabel:&_screenRecordingStatusLabel
-                                         grantButton:&_screenRecordingGrantButton
-                                        grantAction:@selector(grantScreenRecordingClicked:)
-                                      settingsAction:@selector(openScreenRecordingSettingsClicked:)];
+    InsetCardView *accessibilityRow = [self permissionRowWithTitle:NSLocalizedString(@"permission.label.accessibility", nil)
+                                                             detail:NSLocalizedString(@"permission.detail.accessibility", nil)
+                                                           iconView:&_accessibilityIconView
+                                                        statusLabel:&_accessibilityStatusLabel
+                                                         grantButton:&_accessibilityGrantButton
+                                                        grantAction:@selector(grantAccessibilityClicked:)
+                                                      settingsAction:@selector(openAccessibilitySettingsClicked:)];
+    InsetCardView *screenRow = [self permissionRowWithTitle:NSLocalizedString(@"permission.label.screen_record", nil)
+                                                      detail:NSLocalizedString(@"permission.detail.screen_record", nil)
+                                                    iconView:&_screenRecordingIconView
+                                                 statusLabel:&_screenRecordingStatusLabel
+                                                  grantButton:&_screenRecordingGrantButton
+                                                 grantAction:@selector(grantScreenRecordingClicked:)
+                                               settingsAction:@selector(openScreenRecordingSettingsClicked:)];
 
     self.restartButton = [NSButton buttonWithTitle:NSLocalizedString(@"permission.button.restart_app", nil)
                                              target:self
@@ -99,13 +102,13 @@
     ]];
 }
 
-- (NSBox *)permissionRowWithTitle:(NSString *)title
-                           detail:(NSString *)detail
-                         iconView:(NSImageView * __strong *)iconView
-                      statusLabel:(NSTextField * __strong *)statusLabel
-                       grantButton:(NSButton * __strong *)grantButton
-                      grantAction:(SEL)grantAction
-                    settingsAction:(SEL)settingsAction {
+- (InsetCardView *)permissionRowWithTitle:(NSString *)title
+                                    detail:(NSString *)detail
+                                  iconView:(NSImageView * __strong *)iconView
+                               statusLabel:(NSTextField * __strong *)statusLabel
+                                grantButton:(NSButton * __strong *)grantButton
+                               grantAction:(SEL)grantAction
+                             settingsAction:(SEL)settingsAction {
     NSImageView *icon = [[NSImageView alloc] init];
     icon.translatesAutoresizingMaskIntoConstraints = NO;
     [NSLayoutConstraint activateConstraints:@[
@@ -144,18 +147,14 @@
     row.spacing = 12.0;
     [text setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSBox *box = [[NSBox alloc] init];
-    box.boxType = NSBoxCustom;
-    box.borderWidth = 0.0;
-    box.fillColor = NSColor.controlBackgroundColor;
-    box.cornerRadius = 10.0;
-    box.contentViewMargins = NSMakeSize(14.0, 12.0);
-    box.contentView = row;
+    InsetCardView *card = [[InsetCardView alloc] initWithContentView:row
+                                                         edgeInsets:NSEdgeInsetsMake(12.0, 14.0, 12.0, 14.0)
+                                                        cornerRadius:10.0];
 
     *iconView = icon;
     *statusLabel = status;
     *grantButton = grant;
-    return box;
+    return card;
 }
 
 - (void)refreshPermissionStatus {

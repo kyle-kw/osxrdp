@@ -4,6 +4,7 @@
 #include "../../Utils/ConnectionStatusCoordinator.h"
 
 #import "../../AppDelegate.h"
+#import "../InsetCardView.h"
 #import "../PermissionSettingsWindow.h"
 
 @interface MainViewController ()
@@ -21,7 +22,7 @@
 @property (strong) NSImageView *screenRecordingIconView;
 @property (strong) NSImageView *agentIconView;
 @property (strong) NSImageView *sessionIconView;
-@property (strong) NSBox *fileCard;
+@property (strong) InsetCardView *fileCard;
 @property (strong) NSTextField *fileCardTitleLabel;
 @property (assign) BOOL didConfigureInitialState;
 
@@ -118,7 +119,7 @@
     [heroText setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     [self.primaryActionButton setContentHuggingPriority:NSLayoutPriorityRequired forOrientation:NSLayoutConstraintOrientationHorizontal];
 
-    NSBox *heroCard = [self cardWithContentView:heroContent];
+    InsetCardView *heroCard = [self cardWithContentView:heroContent];
 
     NSTextField *readinessTitle = [NSTextField labelWithString:NSLocalizedString(@"main.readiness.title", nil)];
     readinessTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold];
@@ -139,7 +140,10 @@
     readinessRows.orientation = NSUserInterfaceLayoutOrientationVertical;
     readinessRows.alignment = NSLayoutAttributeLeading;
     readinessRows.spacing = 10.0;
-    NSBox *readinessCard = [self cardWithContentView:readinessRows];
+    for (NSView *row in readinessRows.arrangedSubviews) {
+        [row.widthAnchor constraintEqualToAnchor:readinessRows.widthAnchor].active = YES;
+    }
+    InsetCardView *readinessCard = [self cardWithContentView:readinessRows];
 
     NSImage *clipboardImage = [NSImage imageWithSystemSymbolName:@"doc.on.clipboard"
                                         accessibilityDescription:NSLocalizedString(@"main.files.title", nil)];
@@ -205,15 +209,10 @@
     ]];
 }
 
-- (NSBox *)cardWithContentView:(NSView *)contentView {
-    NSBox *box = [[NSBox alloc] init];
-    box.boxType = NSBoxCustom;
-    box.borderWidth = 0.0;
-    box.fillColor = NSColor.controlBackgroundColor;
-    box.cornerRadius = 12.0;
-    box.contentViewMargins = NSMakeSize(16.0, 14.0);
-    box.contentView = contentView;
-    return box;
+- (InsetCardView *)cardWithContentView:(NSView *)contentView {
+    return [[InsetCardView alloc] initWithContentView:contentView
+                                          edgeInsets:NSEdgeInsetsMake(14.0, 16.0, 14.0, 16.0)
+                                         cornerRadius:12.0];
 }
 
 - (NSView *)statusRowWithTitle:(NSString *)title
