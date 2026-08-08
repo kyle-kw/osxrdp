@@ -43,7 +43,7 @@ int main(int argc, const char * argv[]) {
     }
     
     dzlog_info("[osxrdp_sessionmanager] --- osxrdp sessionmanager started! ---");
-    dzlog_info("[osxrdp_sessionmanager] created by byungho kim - https://github.com/bho3538/osxrdp");
+    dzlog_info("[osxrdp_sessionmanager] created by kyle - https://github.com/kyle-kw/osxrdp");
     
     SessionManagerServer server;
     

@@ -132,4 +132,4 @@
 "filecopy.notify.title" = "OSXRDP";
 "filecopy.notify.body" = "%ld file(s) from the remote client are ready to save.";
 
-"about.credits" = "Created by Byungho Kim\nProject page on GitHub";
+"about.credits" = "Created by kyle\nProject page on GitHub";

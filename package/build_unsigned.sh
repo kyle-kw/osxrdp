@@ -22,7 +22,7 @@ OBJROOT="$BUILD_ROOT/Build/Intermediates"
 CONFIGURATION="${CONFIGURATION:-Release}"
 # Universal by default (matches package/build_once.sh intent).
 ARCHS="${ARCHS:-arm64 x86_64}"
-VERSION="${VERSION:-2.0.6}"
+VERSION="${VERSION:-3.0.0}"
 PKG_ID="com.byungho.osxrdp.setup"
 COMPONENT_PKG="osxrdp_component.pkg"
 

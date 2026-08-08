@@ -1,4 +1,9 @@
 # osxrdp - xrdp for macOS
+
+- **Version:** 3.0.0
+- **Author:** kyle
+- **GitHub:** [github.com/kyle-kw/osxrdp](https://github.com/kyle-kw/osxrdp)
+
 ## Overview
 osxrdp is an unofficial module of xrdp to support rdp server in macOS.
 <img width="1282" height="832" alt="OSXRDP" src="https://github.com/user-attachments/assets/539b2870-b5c6-4d16-90b0-ad6d2799951a" />

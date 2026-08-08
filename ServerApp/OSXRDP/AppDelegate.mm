@@ -317,7 +317,7 @@
     NSRange projectRange = [creditsText rangeOfString:@"GitHub"];
     if (projectRange.location != NSNotFound) {
         [credits addAttribute:NSLinkAttributeName
-                       value:@"https://github.com/bho3538/osxrdp"
+                       value:@"https://github.com/kyle-kw/osxrdp"
                        range:projectRange];
     }
     [NSApp activateIgnoringOtherApps:YES];
