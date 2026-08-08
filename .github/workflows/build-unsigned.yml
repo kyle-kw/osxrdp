@@ -31,6 +31,9 @@ jobs:
           xcode-select -p
           clang --version
 
+      - name: Install test dependencies
+        run: brew install ripgrep
+
       - name: Unit tests
         env:
           RUN_TSAN: "1"
