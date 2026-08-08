@@ -54,8 +54,48 @@ bool InFlightTracker::Push(int displayIdx, unsigned int shmReadPos, unsigned int
     return true;
 }
 
+bool InFlightTracker::CancelLatest(unsigned int frameId) {
+    if (_inFlightCount <= 0) {
+        return false;
+    }
+
+    int tail = (_inFlightHead + _inFlightCount - 1) % IN_FLIGHT_SLOT_COUNT;
+    int slot = _inFlightSlotQueue[tail];
+    InFlightFrame* frame = &_inFlightFrames[slot];
+    if (frame->inUse == false || frame->frameId != frameId) {
+        return false;
+    }
+
+    if (frame->displayIdx >= 0 && frame->displayIdx < 16 &&
+        _inFlightCountByDisplay[frame->displayIdx] > 0) {
+        _inFlightCountByDisplay[frame->displayIdx]--;
+    }
+    frame->inUse = false;
+    _freeInFlightSlots[_freeInFlightCount++] = slot;
+    _inFlightCount--;
+    return true;
+}
+
+bool InFlightTracker::GetLastPositionByDisplay(int displayIdx, unsigned int* outShmReadPos) const {
+    if (displayIdx < 0 || displayIdx >= 16 || outShmReadPos == NULL) {
+        return false;
+    }
+
+    for (int offset = _inFlightCount - 1; offset >= 0; offset--) {
+        int queueIndex = (_inFlightHead + offset) % IN_FLIGHT_SLOT_COUNT;
+        int slot = _inFlightSlotQueue[queueIndex];
+        const InFlightFrame* frame = &_inFlightFrames[slot];
+        if (frame->inUse && frame->displayIdx == displayIdx) {
+            *outShmReadPos = frame->shmReadPos;
+            return true;
+        }
+    }
+    return false;
+}
+
 int InFlightTracker::PopAcked(int ackFrameId, unsigned int* outMaxReadPosByDisplay, bool* outHasReadPosByDisplay) {
     int popped = 0;
+    bool seenDisplay[16] = {false,};
 
     while (_inFlightCount > 0) {
         int slot = _inFlightSlotQueue[_inFlightHead];
@@ -68,8 +108,12 @@ int InFlightTracker::PopAcked(int ackFrameId, unsigned int* outMaxReadPosByDispl
         int displayIdx = frame->displayIdx;
         if (displayIdx >= 0 && displayIdx < 16) {
             if (outMaxReadPosByDisplay != NULL) {
-                outMaxReadPosByDisplay[displayIdx] = frame->shmReadPos;
+                if (seenDisplay[displayIdx] == false ||
+                    frame->shmReadPos > outMaxReadPosByDisplay[displayIdx]) {
+                    outMaxReadPosByDisplay[displayIdx] = frame->shmReadPos;
+                }
             }
+            seenDisplay[displayIdx] = true;
             if (outHasReadPosByDisplay != NULL) {
                 outHasReadPosByDisplay[displayIdx] = true;
             }

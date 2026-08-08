@@ -84,4 +84,7 @@
 "settings.diag.slots_pending" = "슬롯 대기";
 "settings.diag.frames_written" = "전송 프레임";
 "settings.diag.dropped_frames" = "드롭 프레임";
+"settings.diag.copy_failures" = "복사 실패";
+"settings.diag.rfx_full_redraw" = "RFX 전체 다시 그리기";
+"settings.diag.ime_timeouts" = "IME 시간 초과";
 "settings.button.done" = "완료";

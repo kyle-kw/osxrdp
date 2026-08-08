@@ -1,6 +1,7 @@
 #include "../pch.h"
 #include "PaintH264.h"
 #include "../osxup.h"
+#include <limits.h>
 
 
 typedef struct _XRDP_EFGX_CMD_HEADER {
@@ -102,13 +103,14 @@ void PaintH264::Release() {
     }
 }
 
-void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) {
+bool PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) {
     assert(mod != NULL);
     assert(frameInfo != NULL);
     assert(imgData != NULL);
 
-    if (displayId < 0 || displayId >= 16 || width <= 0 || height <= 0) {
-        return;
+    if (_drawCmd == NULL || displayId < 0 || displayId >= 16 || width <= 0 || height <= 0 ||
+        imgDataSize == 0 || imgDataSize > INT_MAX) {
+        return false;
     }
     
     XRDP_EGFX_START_FRAME startCmd;
@@ -118,7 +120,9 @@ void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     startCmd.timestamp = 0;
     startCmd.frame_id = frame_id;
     
-    mod->server_egfx_cmd((struct mod*)mod, (char*)&startCmd, sizeof(startCmd), NULL, 0);
+    if (mod->server_egfx_cmd((struct mod*)mod, (char*)&startCmd, sizeof(startCmd), NULL, 0) != 0) {
+        return false;
+    }
     
     xstream_resetPos(_drawCmd);
     
@@ -136,7 +140,7 @@ void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     char* rects_start_ptr = (char*)_drawCmd->data_current;
     
     // rects
-    if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount < MAX_DIRTY_COUNT) {
+    if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
         xstream_writeInt16(_drawCmd, frameInfo->dirtyCount); // num_rects
         
         for (int i = 0; i < frameInfo->dirtyCount; i++) {
@@ -166,7 +170,7 @@ void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     
     *(int*)((char*)_drawCmd->data_start + sizeof(int)) = dataLen;
 
-    mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, imgData, (int)imgDataSize);
+    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, imgData, (int)imgDataSize);
 
     XRDP_EGFX_END_FRAME endCmd;
     endCmd.header.cmdId = 12;
@@ -174,5 +178,6 @@ void PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     endCmd.header.pduLength = sizeof(endCmd);
     endCmd.frame_id = frame_id;
     
-    mod->server_egfx_cmd((struct mod*)mod, (char*)&endCmd, sizeof(endCmd), NULL, 0);
+    int endResult = mod->server_egfx_cmd((struct mod*)mod, (char*)&endCmd, sizeof(endCmd), NULL, 0);
+    return drawResult == 0 && endResult == 0;
 }

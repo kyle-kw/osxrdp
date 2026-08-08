@@ -8,7 +8,7 @@ class PaintRFX : public PaintBase {
 public:
     void Initialize(const struct mod* mod) override;
     void Release() override;
-    void DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) override;
+    bool DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) override;
 
     // RFX slot is a partial-frame format containing only "tiles changed in this frame".
     bool FrameIsSelfContained() const override { return false; }
@@ -34,6 +34,7 @@ private:
     int _dstHeight = 0;
     size_t _srcMinSize = 0;
     size_t _tileDataSize = 0;
+    unsigned char* _tileData = NULL;
 };
 
 #endif /* PaintRFX_h */

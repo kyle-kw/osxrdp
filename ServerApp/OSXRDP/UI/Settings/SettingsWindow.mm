@@ -9,9 +9,6 @@
 @property (strong) NSButton *autoLandCheckbox;
 @property (strong) NSButton *folderPickerBtn;
 @property (strong) NSTextField *folderLabel;
-@property (strong) NSStepper *framerateStepper;
-@property (strong) NSTextField *framerateLabel;
-@property (strong) NSPopUpButton *codecPopup;
 
 // Diagnostics tab
 @property (strong) NSTextField *diagResolutionLabel;
@@ -20,6 +17,9 @@
 @property (strong) NSTextField *diagFrameLagLabel;
 @property (strong) NSTextField *diagFramesWrittenLabel;
 @property (strong) NSTextField *diagDroppedFramesLabel;
+@property (strong) NSTextField *diagCopyFailuresLabel;
+@property (strong) NSTextField *diagRFXFullRedrawLabel;
+@property (strong) NSTextField *diagIMETimeoutsLabel;
 
 @property (strong) NSTimer *diagTimer;
 @property (strong) NSTabView *tabView;
@@ -129,68 +129,6 @@
     [view addSubview:self.folderPickerBtn];
     y -= 40;
 
-    // Framerate stepper
-    self.framerateLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, y, 100, 24)];
-    [self.framerateLabel setEditable:NO];
-    [self.framerateLabel setBordered:NO];
-    [self.framerateLabel setDrawsBackground:NO];
-    [self.framerateLabel setStringValue:NSLocalizedString(@"settings.framerate.label", nil)];
-    [view addSubview:self.framerateLabel];
-
-    NSTextField *fpsValue = [[NSTextField alloc] initWithFrame:NSMakeRect(130, y, 60, 24)];
-    [fpsValue setTag:100];
-    [fpsValue setEditable:NO];
-    [view addSubview:fpsValue];
-
-    self.framerateStepper = [[NSStepper alloc] initWithFrame:NSMakeRect(195, y, 20, 24)];
-    [self.framerateStepper setMinValue:0];
-    [self.framerateStepper setMaxValue:120];
-    [self.framerateStepper setIncrement:5];
-    [self.framerateStepper setValueWraps:NO];
-    [self.framerateStepper setTarget:self];
-    [self.framerateStepper setAction:@selector(framerateChanged:)];
-    [self.framerateStepper setEnabled:NO]; // Not wired to recorder yet
-    [view addSubview:self.framerateStepper];
-    y -= 24;
-
-    NSTextField *framerateHint = [[NSTextField alloc] initWithFrame:NSMakeRect(130, y, 220, 18)];
-    [framerateHint setEditable:NO];
-    [framerateHint setBordered:NO];
-    [framerateHint setDrawsBackground:NO];
-    [framerateHint setFont:[NSFont systemFontOfSize:11]];
-    [framerateHint setTextColor:[NSColor secondaryLabelColor]];
-    [framerateHint setStringValue:NSLocalizedString(@"settings.coming_soon", nil)];
-    [view addSubview:framerateHint];
-    y -= 30;
-
-    // Codec popup
-    NSTextField *codecLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, y, 100, 24)];
-    [codecLabel setEditable:NO];
-    [codecLabel setBordered:NO];
-    [codecLabel setDrawsBackground:NO];
-    [codecLabel setStringValue:NSLocalizedString(@"settings.codec.label", nil)];
-    [view addSubview:codecLabel];
-
-    self.codecPopup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(130, y, 160, 26)];
-    [self.codecPopup addItemWithTitle:NSLocalizedString(@"settings.codec.auto", nil)];
-    [self.codecPopup addItemWithTitle:@"H.264"];
-    [self.codecPopup addItemWithTitle:@"RFX"];
-    [self.codecPopup addItemWithTitle:@"Bitmap"];
-    [self.codecPopup setTarget:self];
-    [self.codecPopup setAction:@selector(codecChanged:)];
-    [self.codecPopup setEnabled:NO]; // Not wired to module yet
-    [view addSubview:self.codecPopup];
-    y -= 24;
-
-    NSTextField *codecHint = [[NSTextField alloc] initWithFrame:NSMakeRect(130, y, 220, 18)];
-    [codecHint setEditable:NO];
-    [codecHint setBordered:NO];
-    [codecHint setDrawsBackground:NO];
-    [codecHint setFont:[NSFont systemFontOfSize:11]];
-    [codecHint setTextColor:[NSColor secondaryLabelColor]];
-    [codecHint setStringValue:NSLocalizedString(@"settings.coming_soon", nil)];
-    [view addSubview:codecHint];
-
     return view;
 }
 
@@ -206,6 +144,9 @@
     self.diagFrameLagLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.frame_lag", nil) labelWidth:labelWidth valueWidth:valueWidth];
     self.diagFramesWrittenLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.frames_written", nil) labelWidth:labelWidth valueWidth:valueWidth];
     self.diagDroppedFramesLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.dropped_frames", nil) labelWidth:labelWidth valueWidth:valueWidth];
+    self.diagCopyFailuresLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.copy_failures", nil) labelWidth:labelWidth valueWidth:valueWidth];
+    self.diagRFXFullRedrawLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.rfx_full_redraw", nil) labelWidth:labelWidth valueWidth:valueWidth];
+    self.diagIMETimeoutsLabel = [self makeDiagRowInView:view y:&y label:NSLocalizedString(@"settings.diag.ime_timeouts", nil) labelWidth:labelWidth valueWidth:valueWidth];
 
     return view;
 }
@@ -236,21 +177,6 @@
     [self.autoLandCheckbox setState:cfg.autoLandFiles ? NSControlStateValueOn : NSControlStateValueOff];
     [self updateFolderLabel];
 
-    int fps = cfg.maxFramerate;
-    NSTextField *fpsField = [self.window.contentView viewWithTag:100];
-    [fpsField setStringValue:[NSString stringWithFormat:@"%d", fps]];
-    [self.framerateStepper setIntValue:fps];
-
-    NSString *codec = cfg.preferredCodec;
-    if ([codec isEqualToString:@"h264"]) {
-        [self.codecPopup selectItemAtIndex:1];
-    } else if ([codec isEqualToString:@"rfx"]) {
-        [self.codecPopup selectItemAtIndex:2];
-    } else if ([codec isEqualToString:@"bitmap"]) {
-        [self.codecPopup selectItemAtIndex:3];
-    } else {
-        [self.codecPopup selectItemAtIndex:0];
-    }
 }
 
 - (void)updateFolderLabel {
@@ -298,25 +224,6 @@
     }
 }
 
-- (void)framerateChanged:(id)sender {
-    int fps = (int)[self.framerateStepper intValue];
-    NSTextField *fpsField = [self.window.contentView viewWithTag:100];
-    [fpsField setIntValue:fps];
-    AppConfig.shared.maxFramerate = fps;
-}
-
-- (void)codecChanged:(id)sender {
-    NSInteger idx = [self.codecPopup indexOfSelectedItem];
-    NSString *codec = @"";
-    switch (idx) {
-        case 1: codec = @"h264"; break;
-        case 2: codec = @"rfx"; break;
-        case 3: codec = @"bitmap"; break;
-        default: codec = @""; break;
-    }
-    AppConfig.shared.preferredCodec = codec;
-}
-
 #pragma mark - Diagnostics Timer
 
 - (void)startDiagTimer {
@@ -348,6 +255,12 @@
         [NSString stringWithFormat:@"%llu", snap.totalFramesWritten];
     self.diagDroppedFramesLabel.stringValue =
         [NSString stringWithFormat:@"%llu", snap.droppedFrames];
+    self.diagCopyFailuresLabel.stringValue =
+        [NSString stringWithFormat:@"%llu", snap.copyFailures];
+    self.diagRFXFullRedrawLabel.stringValue =
+        [NSString stringWithFormat:@"%llu", snap.rfxFullRedrawRequests];
+    self.diagIMETimeoutsLabel.stringValue =
+        [NSString stringWithFormat:@"%llu", snap.imeTimeouts];
 }
 - (IBAction)closeBtnClicked:(id)sender {
     NSWindow *w = self.window;

@@ -13,9 +13,15 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+typedef void (^CJKInputSourceCompletion)(BOOL success,
+                                         NSString *targetSourceID,
+                                         NSString *actualSourceID,
+                                         NSTimeInterval elapsed);
+
 @interface CJKHelper : NSObject
 
-+ (OSStatus)selectNextInputSourceWithWorkaround;
++ (CGEventSourceRef)sharedKeyboardEventSource;
++ (void)selectNextInputSourceWithWorkaround:(CJKInputSourceCompletion)completion;
 
 @end
 

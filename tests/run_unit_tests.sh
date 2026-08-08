@@ -13,7 +13,7 @@ fi
 CC="${CC:-clang}"
 OUT="${TMPDIR:-/tmp}/osxrdp-unit-tests-$$"
 mkdir -p "$OUT"
-trap 'rm -rf "$OUT"' EXIT
+trap 'status=$?; rm -rf "$OUT"; exit "$status"' EXIT
 
 CFLAGS=(
   -std=c11
@@ -101,7 +101,13 @@ build_and_run_cxx() {
         ;;
     esac
   done
-  if ! "$CXX" "${CXXFLAGS[@]}" "${cxx_srcs[@]}" "${c_objs[@]}" -o "$OUT/$name"; then
+  if [[ "${#c_objs[@]}" -gt 0 ]]; then
+    "$CXX" "${CXXFLAGS[@]}" "${cxx_srcs[@]}" "${c_objs[@]}" -o "$OUT/$name" || {
+      echo "FAIL compile $name"
+      failures=$((failures + 1))
+      return
+    }
+  elif ! "$CXX" "${CXXFLAGS[@]}" "${cxx_srcs[@]}" -o "$OUT/$name"; then
     echo "FAIL compile $name"
     failures=$((failures + 1))
     return

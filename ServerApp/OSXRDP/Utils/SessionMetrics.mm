@@ -28,6 +28,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
     unsigned int _readPos;
     uint64_t _totalFramesWritten;
     uint64_t _droppedFrames;
+    uint64_t _copyFailures;
+    uint64_t _rfxFullRedrawRequests;
+    uint64_t _imeTimeouts;
 }
 
 + (instancetype)shared {
@@ -52,8 +55,23 @@ static const char *CodecNameForRecordFormat(int fmt) {
         _readPos = 0;
         _totalFramesWritten = 0;
         _droppedFrames = 0;
+        _copyFailures = 0;
+        _rfxFullRedrawRequests = 0;
+        _imeTimeouts = 0;
     }
     return self;
+}
+
+- (void)recordCopyFailure {
+    dispatch_async(_queue, ^{ _copyFailures++; });
+}
+
+- (void)recordRFXFullRedrawRequest {
+    dispatch_async(_queue, ^{ _rfxFullRedrawRequests++; });
+}
+
+- (void)recordIMETimeout {
+    dispatch_async(_queue, ^{ _imeTimeouts++; });
 }
 
 - (void)recordCommit:(int)displayIdx writePos:(unsigned int)writePos readPos:(unsigned int)readPos {
@@ -103,6 +121,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
         _readPos = 0;
         _totalFramesWritten = 0;
         _droppedFrames = 0;
+        _copyFailures = 0;
+        _rfxFullRedrawRequests = 0;
+        _imeTimeouts = 0;
     });
 }
 
@@ -157,6 +178,24 @@ static const char *CodecNameForRecordFormat(int fmt) {
     return val;
 }
 
+- (uint64_t)copyFailures {
+    __block uint64_t val = 0;
+    dispatch_sync(_queue, ^{ val = _copyFailures; });
+    return val;
+}
+
+- (uint64_t)rfxFullRedrawRequests {
+    __block uint64_t val = 0;
+    dispatch_sync(_queue, ^{ val = _rfxFullRedrawRequests; });
+    return val;
+}
+
+- (uint64_t)imeTimeouts {
+    __block uint64_t val = 0;
+    dispatch_sync(_queue, ^{ val = _imeTimeouts; });
+    return val;
+}
+
 - (void)copySnapshotToDisplayCount:(int *)displayCount
                              width:(int *)width
                             height:(int *)height
@@ -165,10 +204,14 @@ static const char *CodecNameForRecordFormat(int fmt) {
                         codecBufLen:(size_t)codecBufLen
                                lag:(int *)lag
                        totalFrames:(uint64_t *)totalFrames
-                     droppedFrames:(uint64_t *)droppedFrames {
+                     droppedFrames:(uint64_t *)droppedFrames
+                      copyFailures:(uint64_t *)copyFailures
+             rfxFullRedrawRequests:(uint64_t *)rfxFullRedrawRequests
+                       imeTimeouts:(uint64_t *)imeTimeouts {
     __block int bDisplay = 0, bWidth = 0, bHeight = 0, bFps = 0, bFmt = -1;
     __block unsigned int bWrite = 0, bRead = 0;
     __block uint64_t bTotal = 0, bDropped = 0;
+    __block uint64_t bCopyFailures = 0, bRFXRequests = 0, bIMETimeouts = 0;
 
     // Single queue sync so all fields come from one consistent instant.
     dispatch_sync(_queue, ^{
@@ -181,6 +224,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
         bRead = _readPos;
         bTotal = _totalFramesWritten;
         bDropped = _droppedFrames;
+        bCopyFailures = _copyFailures;
+        bRFXRequests = _rfxFullRedrawRequests;
+        bIMETimeouts = _imeTimeouts;
     });
 
     if (displayCount) *displayCount = bDisplay;
@@ -190,6 +236,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
     if (lag) *lag = (int)(bWrite - bRead);
     if (totalFrames) *totalFrames = bTotal;
     if (droppedFrames) *droppedFrames = bDropped;
+    if (copyFailures) *copyFailures = bCopyFailures;
+    if (rfxFullRedrawRequests) *rfxFullRedrawRequests = bRFXRequests;
+    if (imeTimeouts) *imeTimeouts = bIMETimeouts;
 
     if (codecBuf != NULL && codecBufLen > 0) {
         const char *name = CodecNameForRecordFormat(bFmt);
@@ -204,7 +253,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
 
 void SessionMetricsGetSnapshot(int *displayCount, int *width, int *height,
                                int *fps, char *codecBuf, size_t codecBufLen, int *lag,
-                               uint64_t *totalFrames, uint64_t *droppedFrames) {
+                               uint64_t *totalFrames, uint64_t *droppedFrames,
+                               uint64_t *copyFailures, uint64_t *rfxFullRedrawRequests,
+                               uint64_t *imeTimeouts) {
     [SessionMetrics.shared copySnapshotToDisplayCount:displayCount
                                                 width:width
                                                height:height
@@ -213,5 +264,8 @@ void SessionMetricsGetSnapshot(int *displayCount, int *width, int *height,
                                            codecBufLen:codecBufLen
                                                   lag:lag
                                           totalFrames:totalFrames
-                                        droppedFrames:droppedFrames];
+                                        droppedFrames:droppedFrames
+                                         copyFailures:copyFailures
+                                rfxFullRedrawRequests:rfxFullRedrawRequests
+                                          imeTimeouts:imeTimeouts];
 }

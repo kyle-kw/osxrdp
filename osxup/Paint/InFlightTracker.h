@@ -19,6 +19,8 @@ public:
     InFlightTracker();
 
     bool Push(int displayIdx, unsigned int shmReadPos, unsigned int* outFrameId);
+    bool CancelLatest(unsigned int frameId);
+    bool GetLastPositionByDisplay(int displayIdx, unsigned int* outShmReadPos) const;
     int PopAcked(int ackFrameId, unsigned int* outMaxReadPosByDisplay, bool* outHasReadPosByDisplay);
     void Reset();
 

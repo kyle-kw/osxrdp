@@ -32,7 +32,7 @@ vbv_buffer_size = 1_500
 [x264.broadband_high]
 preset = "superfast"
 vbv_max_bitrate = 8_000
-vbv_buffer_Size = 800
+vbv_buffer_size = 800
 
 [x264.satellite]
 preset = "superfast"
@@ -83,4 +83,3 @@ MaxBitrate =    6_000_000
 [OpenH264.modem]
 TargetBitrate = 2_000_000
 MaxBitrate =    3_500_000
-

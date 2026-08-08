@@ -1,7 +1,7 @@
 #include "../pch.h"
 #include "PaintRFX.h"
 #include "../osxup.h"
-#include <sys/mman.h>
+#include <limits.h>
 
 static const short XR_RDPGFX_CMDID_WIRETOSURFACE_2 = 0x0002;
 static const short XR_RDPGFX_CODECID_CAPROGRESSIVE = 0x0009;
@@ -51,18 +51,6 @@ typedef struct _XRDP_EGFX_RESET_GRAPHICS_PDU {
     int bottom;
     int is_primary;
 } __attribute__((packed)) XRDP_EGFX_RESET_GRAPHICS_PDU;
-
-static inline int
-clamp_int(int value, int min_value, int max_value) {
-    if (value < min_value) {
-        return min_value;
-    }
-    
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
 
 void PaintRFX::Initialize(const struct mod* mod) {
     /*
@@ -116,15 +104,17 @@ void PaintRFX::Initialize(const struct mod* mod) {
     _srcMinSize = (size_t)_srcStride * (size_t)_height;
     _tileDataSize = (size_t)_dstStride * (size_t)_dstHeight;
     
-    if (_tileCols <= 0 || _tileRows <= 0 || _tileTotal <= 0 || _tileDataSize == 0) {
+    if (_tileCols <= 0 || _tileRows <= 0 || _tileTotal <= 0 ||
+        _tileDataSize == 0 || _tileDataSize > INT_MAX) {
         Release();
         return;
     }
     
     _drawCmd = xstream_create(512 * 1024 * 2);
     _tileRects = (TileRect*)malloc(sizeof(TileRect) * (size_t)_tileTotal);
+    _tileData = (unsigned char*)calloc(1, _tileDataSize);
 
-    if (_drawCmd == NULL || _tileRects == NULL) {
+    if (_drawCmd == NULL || _tileRects == NULL || _tileData == NULL) {
         Release();
         return;
     }
@@ -154,6 +144,10 @@ void PaintRFX::Release() {
         free(_tileRects);
         _tileRects = NULL;
     }
+    if (_tileData != NULL) {
+        free(_tileData);
+        _tileData = NULL;
+    }
     
     _width = 0;
     _height = 0;
@@ -167,7 +161,7 @@ void PaintRFX::Release() {
     _tileDataSize = 0;
 }
 
-void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) {
+bool PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) {
     assert(mod != NULL);
     assert(frameInfo != NULL);
     assert(imgData != NULL);
@@ -178,15 +172,15 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     (void)height;
 
     if (mod->width != _width || mod->height != _height) {
-        return;
+        return false;
     }
 
-    if (_tileDataSize == 0 || _tileTotal <= 0) {
-        return;
+    if (_tileData == NULL || _tileDataSize == 0 || _tileTotal <= 0) {
+        return false;
     }
 
     if (imgDataSize < sizeof(int)) {
-        return;
+        return false;
     }
 
     const unsigned char* slot = (const unsigned char*)imgData;
@@ -194,13 +188,13 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     memcpy(&slotTileCount, slot, sizeof(int));
 
     if (slotTileCount <= 0 || slotTileCount > _tileTotal) {
-        return;
+        return false;
     }
 
     // Validate slot size: header(int) + indices(int*n) + tileData(16384*n)
     const size_t expected = sizeof(int) + sizeof(int) * (size_t)slotTileCount + (size_t)slotTileCount * OSXRDP_RFX_TILE_BYTES;
     if (imgDataSize < expected) {
-        return;
+        return false;
     }
 
     const int* slotIndices = (const int*)(slot + sizeof(int));
@@ -226,7 +220,7 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     for (int i = 0; i < slotTileCount; ++i) {
         const int tileIdx = slotIndices[i];
         if (tileIdx < 0 || tileIdx >= _tileTotal) {
-            return; // Corrupted slot
+            return false; // Corrupted slot
         }
         const TileRect* rect = &_tileRects[tileIdx];
         xstream_writeInt16(_drawCmd, rect->left);
@@ -252,17 +246,11 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     int dataLen = (int)((char*)_drawCmd->data_current - (char*)_drawCmd->data_start);
     *(int*)((char*)_drawCmd->data_start + sizeof(int)) = dataLen;
 
-    void* mapped = mmap(NULL, _tileDataSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (mapped == MAP_FAILED) {
-        return;
-    }
-
-    unsigned char* dst = (unsigned char*)mapped;
     const size_t tileSize = 16384; // 64 x 64 x (Y + U + V + A)
 
     for (int i = 0; i < slotTileCount; ++i) {
         const int tileIdx = slotIndices[i];
-        memcpy(dst + (size_t)tileIdx * tileSize,
+        memcpy(_tileData + (size_t)tileIdx * tileSize,
                slotTileData + (size_t)i * tileSize,
                tileSize);
     }
@@ -274,8 +262,10 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     startCmd.timestamp = 0;
     startCmd.frame_id = frame_id;
 
-    mod->server_egfx_cmd((struct mod*)mod, (char*)&startCmd, sizeof(startCmd), NULL, 0);
-    mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, (char*)mapped, (int)_tileDataSize);
+    if (mod->server_egfx_cmd((struct mod*)mod, (char*)&startCmd, sizeof(startCmd), NULL, 0) != 0) {
+        return false;
+    }
+    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, (char*)_tileData, (int)_tileDataSize);
 
     XRDP_EGFX_END_FRAME endCmd;
     endCmd.header.cmdId = 12;
@@ -283,6 +273,6 @@ void PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     endCmd.header.pduLength = sizeof(endCmd);
     endCmd.frame_id = frame_id;
 
-    mod->server_egfx_cmd((struct mod*)mod, (char*)&endCmd, sizeof(endCmd), NULL, 0);
-    munmap(mapped, _tileDataSize);
+    int endResult = mod->server_egfx_cmd((struct mod*)mod, (char*)&endCmd, sizeof(endCmd), NULL, 0);
+    return drawResult == 0 && endResult == 0;
 }

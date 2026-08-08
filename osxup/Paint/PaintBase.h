@@ -13,7 +13,7 @@ public:
 
     virtual void Initialize(const struct mod* mod) = 0;
     virtual void Release() = 0;
-    virtual void DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) = 0;
+    virtual bool DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, char* imgData, size_t imgDataSize, int frame_id, int displayId, int width, int height) = 0;
 
     // Whether the slot frame is a full frame or contains only partial changes
     //   - BGRA32 / NV12 : slot = full frame image         -> true  (default)

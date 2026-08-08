@@ -33,7 +33,8 @@ ConnectionDiagnosticsSnapshot ConnectionDiagnostics::Capture(void) {
     s.currentCodecBuf[0] = '\0';
     SessionMetricsGetSnapshot(&s.activeDisplayCount, &s.currentWidth, &s.currentHeight,
                               &s.currentFramerate, s.currentCodecBuf, sizeof(s.currentCodecBuf),
-                              &s.frameLag, &s.totalFramesWritten, &s.droppedFrames);
+                              &s.frameLag, &s.totalFramesWritten, &s.droppedFrames,
+                              &s.copyFailures, &s.rfxFullRedrawRequests, &s.imeTimeouts);
     s.currentCodec = s.currentCodecBuf;
     s.lastStartErrorKey = g_lastStartErrorKey[0] != '\0' ? g_lastStartErrorKey : "";
 

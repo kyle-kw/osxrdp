@@ -5,26 +5,45 @@
 #include "PaintBitmap.h"
 #include "PaintH264.h"
 #include "PaintRFX.h"
+#include "FrameSelection.h"
+#include "CursorSnapshot.h"
 #include "utils.h"
+#include <stdio.h>
 #include <unistd.h>
+#include <time.h>
 
 static const char* OSXRDP_SCREENSHM_NAME = "/osxrdpshm";
 static const char* OSXRDP_CURSORSHM_NAME = "/osxrdpcursorshm";
+
+static uint64_t MonotonicNanos() {
+    struct timespec ts = {0, 0};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000000ULL) + (uint64_t)ts.tv_nsec;
+}
 
 PaintManager::PaintManager() :
     _inited(false),
     _mod(NULL),
     _paint(NULL),
     _cursorShm(NULL),
+    _lastCursorGeneration(0),
     _inPainting(false),
     _releasePending(false),
     _recordShmCnt(0),
     _sessionId(0),
+    _submittedFrameCount(0),
+    _ackedFrameCount(0),
+    _skippedFrameCount(0),
+    _rfxFullRedrawRequestCount(0),
     _isLockScreen(false)
 {
+    memset(_submittedFrameIds, 0, sizeof(_submittedFrameIds));
+    memset(_submittedAtNanos, 0, sizeof(_submittedAtNanos));
     for (int i = 0; i < 16; i++) {
         _recordShm[i] = NULL;
         _needPaintDisplay[i] = 0;
+        _lastSubmittedPos[i] = 0;
+        _hasLastSubmittedPos[i] = false;
     }
 }
 
@@ -137,6 +156,17 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
     _isLockScreen = isLockScreen;
     _releasePending = false;
     _inFlightTracker.Reset();
+    _lastCursorGeneration = 0;
+    memset(_submittedFrameIds, 0, sizeof(_submittedFrameIds));
+    memset(_submittedAtNanos, 0, sizeof(_submittedAtNanos));
+    _submittedFrameCount = 0;
+    _ackedFrameCount = 0;
+    _skippedFrameCount = 0;
+    _rfxFullRedrawRequestCount = 0;
+    for (int i = 0; i < 16; i++) {
+        _lastSubmittedPos[i] = 0;
+        _hasLastSubmittedPos[i] = false;
+    }
     
     _inited = true;
     
@@ -182,6 +212,15 @@ bool PaintManager::ReinitializeForResize() {
 }
 
 void PaintManager::ReleaseResources() {
+    if (_submittedFrameCount > 0 || _skippedFrameCount > 0 ||
+        _rfxFullRedrawRequestCount > 0) {
+        fprintf(stderr,
+                "[osxup][paint] summary submitted=%llu acked=%llu skipped=%llu rfx_full_redraw=%llu\n",
+                (unsigned long long)_submittedFrameCount,
+                (unsigned long long)_ackedFrameCount,
+                (unsigned long long)_skippedFrameCount,
+                (unsigned long long)_rfxFullRedrawRequestCount);
+    }
     if (_paint != NULL) {
         delete _paint;
         _paint = NULL;
@@ -196,6 +235,8 @@ void PaintManager::ReleaseResources() {
         }
         
         _needPaintDisplay[i] = 0;
+        _lastSubmittedPos[i] = 0;
+        _hasLastSubmittedPos[i] = false;
     }
     _recordShmCnt = 0;
     
@@ -205,30 +246,37 @@ void PaintManager::ReleaseResources() {
         
         _cursorShm = NULL;
     }
+    _lastCursorGeneration = 0;
     
     _mod = NULL;
     _inFlightTracker.Reset();
+    memset(_submittedFrameIds, 0, sizeof(_submittedFrameIds));
+    memset(_submittedAtNanos, 0, sizeof(_submittedAtNanos));
+    _submittedFrameCount = 0;
+    _ackedFrameCount = 0;
+    _skippedFrameCount = 0;
+    _rfxFullRedrawRequestCount = 0;
     _inPainting = false;
     _releasePending = false;
     _inited = false;
 }
 
-void PaintManager::Paint() {
+bool PaintManager::Paint() {
     if (_inited == false || _paint == NULL || _recordShmCnt == 0 || _cursorShm == NULL) {
-        return;
+        return true;
     }
 
     // During reconnection, stop submitting new paints to previous shared memory
     // and only wait for existing in-flight frame ACKs.
     if (_releasePending == true) {
-        return;
+        return true;
     }
     
     // Draw mouse cursor
     PaintMouseCursor();
     
     if (_inFlightTracker.TotalCount() >= FRAME_SLOTS * _recordShmCnt) {
-        return;
+        return true;
     }
     
     for (int i = 0; i < _recordShmCnt; i++) {
@@ -257,14 +305,39 @@ void PaintManager::Paint() {
             if (_inFlightTracker.Push(i, shm_frame_id, &frame_id) == false) {
                 break;
             }
+            _lastSubmittedPos[i] = shm_frame_id;
+            _hasLastSubmittedPos[i] = true;
             _inPainting = (_inFlightTracker.TotalCount() > 0);
 
-            // Paint
-            _paint->DoPaint(_mod, frameInfo, imgData, imgDataSize, frame_id, i, width, height);
+            const unsigned int trackerSlot =
+                frame_id % InFlightTracker::IN_FLIGHT_SLOT_COUNT;
+            _submittedFrameIds[trackerSlot] = frame_id;
+            _submittedAtNanos[trackerSlot] = MonotonicNanos();
+            _submittedFrameCount++;
+            if (_submittedFrameCount == 1 || (_submittedFrameCount % 120) == 0) {
+                fprintf(stderr,
+                        "[osxup][paint] submit display=%d shm_pos=%u frame_id=%u submitted=%llu skipped=%llu\n",
+                        i, shm_frame_id, frame_id,
+                        (unsigned long long)_submittedFrameCount,
+                        (unsigned long long)_skippedFrameCount);
+            }
+
+            // A failed painter cannot produce an ACK. Roll back the tracker tail and
+            // terminate the session rather than pinning the SHM ring forever.
+            if (_paint->DoPaint(_mod, frameInfo, imgData, imgDataSize, frame_id, i, width, height) == false) {
+                _inFlightTracker.CancelLatest(frame_id);
+                _submittedFrameIds[trackerSlot] = 0;
+                _submittedAtNanos[trackerSlot] = 0;
+                _hasLastSubmittedPos[i] =
+                    _inFlightTracker.GetLastPositionByDisplay(i, &_lastSubmittedPos[i]);
+                _inPainting = (_inFlightTracker.TotalCount() > 0);
+                return false;
+            }
             
             cnt++;
         }
     }
+    return true;
 }
 
 bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outImgData, size_t* outImgDataSize, int* outWidth, int* outHeight, unsigned int* frame_id, int displayIdx) {
@@ -291,43 +364,43 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
         return false;
     }
 
-    int forceRedrawAll = 0;
     int displayInFlightCount = _inFlightTracker.CountByDisplay(displayIdx);
-    unsigned int targetPos = read_pos + (unsigned int)displayInFlightCount;
-    if (targetPos >= write_pos) {
+    bool selfContained = (_paint == NULL || _paint->FrameIsSelfContained() == true);
+    FrameSelectionDecision decision = SelectFramePosition(
+        read_pos, write_pos, displayInFlightCount,
+        _hasLastSubmittedPos[displayIdx], _lastSubmittedPos[displayIdx],
+        selfContained);
+    if (decision.requestRFXFullRedraw) {
+        atomic_store_explicit(&shm->consumer_request_full, 1, memory_order_release);
+        atomic_store_explicit(&shm->read_pos, write_pos, memory_order_release);
+        _hasLastSubmittedPos[displayIdx] = false;
+        _rfxFullRedrawRequestCount++;
+        fprintf(stderr,
+                "[osxup][paint] rfx_full_redraw display=%d read=%u write=%u requests=%llu\n",
+                displayIdx, read_pos, write_pos,
+                (unsigned long long)_rfxFullRedrawRequestCount);
         return false;
     }
-
-    bool selfContained = (_paint == NULL || _paint->FrameIsSelfContained() == true);
-    bool trueBacklog = (displayInFlightCount == 0 && (write_pos - read_pos >= FRAME_SLOTS));
-    
-    // How to handle backlog
-    //   - self-contained format (BGRA32 / NV12) : jump to latest slot and process full.
-    //   - partial-frame format (RFX)          : cannot reconstruct intermediate dirty tiles, so drop entire backlog and request full redraw from producer. Skip this paint.
-    if (selfContained == false) {
-        if (trueBacklog == true) {
-            atomic_store_explicit(&shm->consumer_request_full, 1, memory_order_release);
-            atomic_store_explicit(&shm->read_pos, write_pos, memory_order_release);
-            return false;
-        }
+    if (!decision.hasFrame) {
+        return false;
     }
-    else {
-        if (trueBacklog == true || (displayInFlightCount == 0 && read_pos == 0)) {
-            targetPos = write_pos - 1;
-            forceRedrawAll = 1;
-        }
-    }
+    unsigned int targetPos = decision.targetPos;
     
     unsigned int idx = targetPos % FRAME_SLOTS;
-    size_t slotOffset = (size_t)shm->screenrecord_data_size * (size_t)idx;
-    size_t minMapped = sizeof(screenrecord_shm_t) + slotOffset + (size_t)shm->screenrecord_data_size;
+    size_t slotSize = (size_t)shm->screenrecord_data_size;
+    if (idx != 0 && slotSize > SIZE_MAX / (size_t)idx) return false;
+    size_t slotOffset = slotSize * (size_t)idx;
+    size_t dataOffset = offsetof(screenrecord_shm_t, screenrecord_datas);
+    if (slotOffset > SIZE_MAX - dataOffset ||
+        slotSize > SIZE_MAX - (dataOffset + slotOffset)) return false;
+    size_t minMapped = dataOffset + slotOffset + slotSize;
     // screenrecord_datas is the flexible tail; validate against mapped region size.
     if (minMapped > recordShm->size) {
         return false;
     }
 
     screenrecord_frame_t* frame = &(shm->frames[idx]);
-    char* imgData = *(&shm->screenrecord_datas + slotOffset);
+    char* imgData = shm->screenrecord_datas + slotOffset;
 
     size_t imgDataSize = 0;
     memcpy(&imgDataSize, imgData, sizeof(size_t));
@@ -336,8 +409,20 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     if (imgDataSize == 0 || (sizeof(size_t) + imgDataSize) > (size_t)shm->screenrecord_data_size)
         return false;
 
-    if (forceRedrawAll != 0) {
+    if (decision.forceFullDirty) {
         frame->dirtyCount = 0;
+    }
+    if (decision.skippedFrames > 0) {
+        uint64_t previousSkipped = _skippedFrameCount;
+        _skippedFrameCount += decision.skippedFrames;
+        if (previousSkipped == 0 ||
+            previousSkipped / 120 != _skippedFrameCount / 120) {
+            fprintf(stderr,
+                    "[osxup][paint] chase_latest display=%d read=%u write=%u submit=%u skipped_now=%llu skipped_total=%llu\n",
+                    displayIdx, read_pos, write_pos, targetPos,
+                    (unsigned long long)decision.skippedFrames,
+                    (unsigned long long)_skippedFrameCount);
+        }
     }
 
     *outFrameInfo = frame;
@@ -367,10 +452,45 @@ void PaintManager::PaintEnd(int ackFrameId) {
     unsigned int maxReadPosByDisplay[16] = {0,};
     bool hasReadPosByDisplay[16] = {false,};
 
+    uint64_t nowNanos = MonotonicNanos();
+    uint64_t oldestSubmittedAt = 0;
+    for (int i = 0; i < InFlightTracker::IN_FLIGHT_SLOT_COUNT; i++) {
+        unsigned int submittedFrameId = _submittedFrameIds[i];
+        if (submittedFrameId == 0 ||
+            (ackFrameId >= 0 && (int)submittedFrameId > ackFrameId)) continue;
+        uint64_t submittedAt = _submittedAtNanos[i];
+        if (submittedAt != 0 && (oldestSubmittedAt == 0 || submittedAt < oldestSubmittedAt)) {
+            oldestSubmittedAt = submittedAt;
+        }
+    }
+
     int popped = _inFlightTracker.PopAcked(ackFrameId, maxReadPosByDisplay, hasReadPosByDisplay);
     if (popped <= 0) {
         _inPainting = (_inFlightTracker.TotalCount() > 0);
         return;
+    }
+
+    for (int i = 0; i < InFlightTracker::IN_FLIGHT_SLOT_COUNT; i++) {
+        unsigned int submittedFrameId = _submittedFrameIds[i];
+        if (submittedFrameId != 0 &&
+            (ackFrameId < 0 || (int)submittedFrameId <= ackFrameId)) {
+            _submittedFrameIds[i] = 0;
+            _submittedAtNanos[i] = 0;
+        }
+    }
+    _ackedFrameCount += (uint64_t)popped;
+    double ackLatencyMs = (oldestSubmittedAt != 0 && nowNanos >= oldestSubmittedAt)
+        ? (double)(nowNanos - oldestSubmittedAt) / 1000000.0 : 0.0;
+    bool periodicAckLog = _ackedFrameCount == (uint64_t)popped ||
+        (_ackedFrameCount % 120) < (uint64_t)popped;
+    bool slowAckLog = ackLatencyMs >= 33.3 &&
+        (_ackedFrameCount % 30) < (uint64_t)popped;
+    if (periodicAckLog || slowAckLog) {
+        fprintf(stderr,
+                "[osxup][paint] ack frame_id=%d popped=%d latency_ms=%.2f acked=%llu in_flight=%d\n",
+                ackFrameId, popped, ackLatencyMs,
+                (unsigned long long)_ackedFrameCount,
+                _inFlightTracker.TotalCount());
     }
 
     for (int i = 0; i < _recordShmCnt; i++) {
@@ -388,6 +508,14 @@ void PaintManager::PaintEnd(int ackFrameId) {
         if (nextReadPos > read_pos) {
             atomic_store_explicit(&shm->read_pos, nextReadPos, memory_order_release);
         }
+
+        if (_inFlightTracker.CountByDisplay(i) == 0) {
+            _hasLastSubmittedPos[i] = false;
+        }
+        else {
+            _hasLastSubmittedPos[i] =
+                _inFlightTracker.GetLastPositionByDisplay(i, &_lastSubmittedPos[i]);
+        }
     }
     
     _inPainting = (_inFlightTracker.TotalCount() > 0);
@@ -399,20 +527,12 @@ void PaintManager::PaintMouseCursor() {
     }
 
     cursor_data_t* cursorData = (cursor_data_t*)_cursorShm->mem;
-    
-    int updated = atomic_load_explicit(&cursorData->updated,  memory_order_acquire);
-    if (updated == 1) {
-        int width = cursorData->width;
-        int height = cursorData->height;
-        if (width <= 0 || height <= 0 ||
-            width > MAX_CURSOR_IMG_BUFFER_SIZE ||
-            height > MAX_CURSOR_IMG_BUFFER_SIZE) {
-            atomic_store_explicit(&cursorData->updated, 0, memory_order_release);
-            return;
-        }
+    CursorSnapshot snapshot = {};
+    if (!TryCopyCursorSnapshot(cursorData, _lastCursorGeneration, &snapshot)) return;
 
-        _mod->server_set_pointer_large((struct mod*)_mod, cursorData->hotspotX, cursorData->hotspotY, cursorData->cursorImgData, cursorData->cursorMaskData, 32, width, height);
-        
-        atomic_store_explicit(&cursorData->updated, 0, memory_order_release);
-    }
+    _mod->server_set_pointer_large((struct mod*)_mod,
+                                   snapshot.hotspotX, snapshot.hotspotY,
+                                   snapshot.image, snapshot.mask, 32,
+                                   snapshot.width, snapshot.height);
+    _lastCursorGeneration = snapshot.generation;
 }

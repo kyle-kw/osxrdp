@@ -9,8 +9,10 @@
 #include <limits.h>
 
 #import "CJKHelper.h"
+#import "../Utils/SessionMetrics.h"
 
 #define _IME_SWITCH_CODE kVK_RightOption
+static const size_t kMaxBufferedKeyboardEvents = 128;
 
 static const CGEventFlags kDeviceLeftControlFlag = 0x00000001;
 static const CGEventFlags kDeviceLeftShiftFlag = 0x00000002;
@@ -143,15 +145,41 @@ InputHandler::InputHandler() :
     _fastWheelEventCount(0),
     _lastWheelDirection(0),
     _wheelSmoothedAmount(0.0f),
-    _lastWheelIsTrackpad(false)
+    _lastWheelIsTrackpad(false),
+    _keyboardEventRef(0),
+    _keyboardQueue(NULL),
+    _keyboardShuttingDown(false),
+    _imeSwitchPending(false),
+    _imeSwitchGeneration(0)
 {
     memset(_displayLayouts, 0x00, sizeof(_displayLayouts));
     _eventRef = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    _keyboardEventRef = [CJKHelper sharedKeyboardEventSource];
+    if (_keyboardEventRef != NULL) CFRetain(_keyboardEventRef);
+    _keyboardQueue = dispatch_queue_create("osxrdp.keyboard", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(_keyboardQueue, this, this, NULL);
+    _keyboardLifetime = std::make_shared<KEYBOARD_LIFETIME>();
+    __atomic_store_n(&_keyboardLifetime->active, true, __ATOMIC_RELEASE);
     
     _mouseKeyStatus.status = 0;
 }
 
 InputHandler::~InputHandler() {
+    __atomic_store_n(&_keyboardLifetime->active, false, __ATOMIC_RELEASE);
+    auto shutdown = ^{
+        _keyboardShuttingDown = true;
+        _imeSwitchGeneration++;
+        _imeSwitchPending = false;
+        _bufferedKeyboardEvents.clear();
+    };
+    if (_keyboardQueue != NULL) {
+        if (dispatch_get_specific(this) == this) shutdown();
+        else dispatch_sync(_keyboardQueue, shutdown);
+    }
+    if (_keyboardEventRef != 0) {
+        CFRelease(_keyboardEventRef);
+        _keyboardEventRef = 0;
+    }
     if (_eventRef != 0) {
         CFRelease(_eventRef);
         _eventRef = 0;
@@ -387,7 +415,7 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
 }
 
 void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
-    if (cmd == NULL) return;
+    if (cmd == NULL || xstream_getRemaining(cmd) < (int)(sizeof(int) * 3)) return;
     
     int inputType = xstream_readInt32(cmd);
     int keyCode = xstream_readInt32(cmd);
@@ -399,8 +427,7 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
         keyCode = MapExtendedKey(keyCode & 0x7F);
     }
     else {
-        // invalid keycode
-        if (keyCode > 89) {
+        if (keyCode < 0 || keyCode > 89) {
             return;
         }
         
@@ -409,13 +436,43 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
     }
     
     
-    if (keyCode == _IME_SWITCH_CODE) {
-        SwitchIME(inputType == XRDP_KEYBOARD_DOWN);
+    if (keyCode == 0xFF ||
+        (inputType != XRDP_KEYBOARD_DOWN && inputType != XRDP_KEYBOARD_UP)) {
         return;
     }
-        
+
+    if (keyCode == _IME_SWITCH_CODE) {
+        if (inputType == XRDP_KEYBOARD_DOWN) {
+            dispatch_async(_keyboardQueue, ^{ BeginIMESwitch(); });
+        }
+        return;
+    }
+
+    KEYBOARD_EVENT event = { inputType, (CGKeyCode)keyCode };
+    dispatch_async(_keyboardQueue, ^{ HandleQueuedKeyboardEvent(event); });
+}
+
+void InputHandler::HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
+    if (_keyboardShuttingDown) return;
+
+    if (_imeSwitchPending) {
+        if (_bufferedKeyboardEvents.size() < kMaxBufferedKeyboardEvents) {
+            _bufferedKeyboardEvents.push_back(event);
+            return;
+        }
+
+        NSLog(@"[InputHandler] IME keyboard buffer overflow; cancelling switch");
+        _imeSwitchGeneration++;
+        _imeSwitchPending = false;
+        FlushBufferedKeyboardEvents();
+    }
+
+    PostQueuedKeyboardEvent(event);
+}
+
+void InputHandler::PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
     bool keyDown = false;
-    switch (inputType) {
+    switch (event.inputType) {
         case XRDP_KEYBOARD_DOWN:
             keyDown = true;
             break;
@@ -426,12 +483,12 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
             return;
     }
     
-    CGEventRef ev = CGEventCreateKeyboardEvent(_eventRef, keyCode, keyDown);
+    CGEventRef ev = CGEventCreateKeyboardEvent(_keyboardEventRef, event.keyCode, keyDown);
     if (ev == NULL) {
         return;
     }
 
-    ModifierStateChange modifierState = UpdateKeyboardModifierState(keyCode, keyDown);
+    ModifierStateChange modifierState = UpdateKeyboardModifierState(event.keyCode, keyDown);
     if (modifierState == ModifierStateChanged) {
         CGEventSetType(ev, kCGEventFlagsChanged);
     }
@@ -443,8 +500,8 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
     // Mission Control
     CGEventFlags eventFlags = _keyboardModifierFlags;
     if ((eventFlags & kCGEventFlagMaskControl) != 0 &&
-        (keyCode == kVK_UpArrow || keyCode == kVK_DownArrow ||
-         keyCode == kVK_LeftArrow || keyCode == kVK_RightArrow)) {
+        (event.keyCode == kVK_UpArrow || event.keyCode == kVK_DownArrow ||
+         event.keyCode == kVK_LeftArrow || event.keyCode == kVK_RightArrow)) {
         eventFlags |= kCGEventFlagMaskSecondaryFn;
     }
     CGEventSetFlags(ev, eventFlags);
@@ -803,18 +860,67 @@ InputHandler::ModifierStateChange InputHandler::UpdateKeyboardModifierState(CGKe
     return oldFlags != _keyboardModifierFlags ? ModifierStateChanged : ModifierStateUnchanged;
 }
 
-void InputHandler::SwitchIME(bool keyDown) {
-    if (!keyDown) {
-        return;
+void InputHandler::BeginIMESwitch() {
+    if (_keyboardShuttingDown) return;
+
+    bool startBufferDeadline = !_imeSwitchPending;
+    _imeSwitchPending = true;
+    uint64_t generation = ++_imeSwitchGeneration;
+    InputHandler* handler = this;
+    dispatch_queue_t keyboardQueue = _keyboardQueue;
+    std::shared_ptr<KEYBOARD_LIFETIME> lifetime = _keyboardLifetime;
+
+    // The helper normally completes within 200ms, but it starts on the main
+    // queue which may itself be busy. Enforce the buffering deadline on the
+    // dedicated keyboard queue so keystrokes are never held longer than 200ms.
+    if (startBufferDeadline) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
+                       keyboardQueue, ^{
+            if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE) ||
+                !handler->_imeSwitchPending) return;
+            handler->CompleteIMESwitch(handler->_imeSwitchGeneration, false, 0.200);
+        });
     }
 
     dispatch_async(dispatch_get_main_queue(), ^{
-        OSStatus status = [CJKHelper selectNextInputSourceWithWorkaround];
-
-        if (status != noErr) {
-            NSLog(@"[InputHandler] Failed to switch input source. Error: %d", (int)status);
-        }
+        if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
+        [CJKHelper selectNextInputSourceWithWorkaround:
+            ^(BOOL success, NSString *targetSourceID, NSString *actualSourceID, NSTimeInterval elapsed) {
+                NSLog(@"[InputHandler] IME switch generation=%llu success=%d target=%@ actual=%@ elapsed=%.3f",
+                      (unsigned long long)generation, success, targetSourceID, actualSourceID, elapsed);
+                if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
+                dispatch_async(keyboardQueue, ^{
+                    if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
+                    handler->CompleteIMESwitch(generation, success, elapsed);
+                });
+            }];
     });
+}
+
+void InputHandler::CompleteIMESwitch(uint64_t generation, bool success, double elapsed) {
+    if (_keyboardShuttingDown || !_imeSwitchPending || generation != _imeSwitchGeneration) {
+        return;
+    }
+
+    if (!success) {
+        if (elapsed >= 0.199) {
+            NSLog(@"[InputHandler] IME switch timed out after %.3f seconds; flushing buffered keys", elapsed);
+            [SessionMetrics.shared recordIMETimeout];
+        }
+        else {
+            NSLog(@"[InputHandler] IME switch failed after %.3f seconds; flushing buffered keys", elapsed);
+        }
+    }
+    _imeSwitchPending = false;
+    FlushBufferedKeyboardEvents();
+}
+
+void InputHandler::FlushBufferedKeyboardEvents() {
+    while (!_bufferedKeyboardEvents.empty()) {
+        KEYBOARD_EVENT event = _bufferedKeyboardEvents.front();
+        _bufferedKeyboardEvents.pop_front();
+        PostQueuedKeyboardEvent(event);
+    }
 }
 
 void InputHandler::RestorePreviousMouseKeydownEvent() {

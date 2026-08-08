@@ -3,6 +3,9 @@
 
 #include "xstream.h"
 #include <ApplicationServices/ApplicationServices.h>
+#include <dispatch/dispatch.h>
+#include <deque>
+#include <memory>
 
 class InputHandler {
 public:
@@ -79,6 +82,21 @@ private:
     CGEventFlags _keyboardModifierFlags;
     
     CGEventSourceRef _eventRef;
+    CGEventSourceRef _keyboardEventRef;
+    dispatch_queue_t _keyboardQueue;
+
+    struct KEYBOARD_EVENT {
+        int inputType;
+        CGKeyCode keyCode;
+    };
+    std::deque<KEYBOARD_EVENT> _bufferedKeyboardEvents;
+    struct KEYBOARD_LIFETIME {
+        bool active;
+    };
+    std::shared_ptr<KEYBOARD_LIFETIME> _keyboardLifetime;
+    bool _keyboardShuttingDown;
+    bool _imeSwitchPending;
+    uint64_t _imeSwitchGeneration;
     
     void HandleMouseDoubleClick(CGEventRef ev, bool mouseDown, int mouseX, int mouseY, int mouseButton);
     bool MapClientPointToDisplayPoint(int clientX, int clientY, int* outX, int* outY);
@@ -100,8 +118,11 @@ private:
 
     CGKeyCode MapExtendedKey(int scancode);
     ModifierStateChange UpdateKeyboardModifierState(CGKeyCode key, bool isDown);
-    
-    void SwitchIME(bool keyDown);
+    void HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event);
+    void PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event);
+    void BeginIMESwitch();
+    void CompleteIMESwitch(uint64_t generation, bool success, double elapsed);
+    void FlushBufferedKeyboardEvents();
 };
 
 #endif /* InputHandler_hpp */

@@ -55,8 +55,6 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
     if (seed == _cursorseed) {
         return false;
     }
-    _cursorseed = seed;
-    
     // Get cursor data size
     int datasize = 0;
     if (CGSGetGlobalCursorDataSize(_connectionId, &datasize) != 0) {
@@ -123,6 +121,11 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
     hotX = clamp_int(hotX, 0, dstSize - 1);
     hotY = clamp_int(hotY, 0, dstSize - 1);
 
+    unsigned int generation = atomic_load_explicit(&cursor->generation, memory_order_relaxed);
+    if ((generation & 1U) != 0) generation++;
+    atomic_store_explicit(&cursor->generation, generation + 1U, memory_order_relaxed);
+    atomic_thread_fence(memory_order_seq_cst);
+
     cursor->width = dstSize;
     cursor->height = dstSize;
     cursor->hotspotX = hotX;
@@ -134,7 +137,8 @@ bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
     // Cursor image size
     cursor->cursorImgDataSize = cursor->width * cursor->height * 4;
         
-    atomic_store_explicit(&cursor->updated, 1, memory_order_release);
+    atomic_store_explicit(&cursor->generation, generation + 2U, memory_order_release);
+    _cursorseed = seed;
     
     return true;
 }

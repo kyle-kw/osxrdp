@@ -322,7 +322,9 @@ int ConnectionManager::GetAdaptiveTimeout() {
 }
 
 void ConnectionManager::Paint() {    
-    _paintManager.Paint();
+    if (_paintManager.Paint() == false) {
+        _statusManager.SetStopping();
+    }
 }
 
 void ConnectionManager::PaintEnd(int ackFrameId) {

@@ -84,4 +84,7 @@
 "settings.diag.slots_pending" = "slots pending";
 "settings.diag.frames_written" = "Frames Written";
 "settings.diag.dropped_frames" = "Dropped Frames";
+"settings.diag.copy_failures" = "Copy Failures";
+"settings.diag.rfx_full_redraw" = "RFX Full Redraws";
+"settings.diag.ime_timeouts" = "IME Timeouts";
 "settings.button.done" = "Done";

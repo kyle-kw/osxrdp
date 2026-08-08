@@ -1,5 +1,6 @@
 #import "ScreenRecorderFallbackImpl.h"
 #include "osxrdp/packet.h"
+#include <stdatomic.h>
 
 @implementation ScreenRecorderFallbackImpl {
     CGDisplayStreamRef _displayStream;
@@ -11,6 +12,7 @@
     void* _recordCmdCbUserData;
     int _displayIdx;
     BOOL _intentionalStop;
+    _Atomic bool _callbacksEnabled;
 }
 
 - (instancetype)init {
@@ -24,6 +26,7 @@
         _recordCmdCb = NULL;
         _recordCmdCbUserData = NULL;
         _intentionalStop = NO;
+        atomic_store(&_callbacksEnabled, false);
     }
     return self;
 }
@@ -85,17 +88,12 @@
     }
     
     _displayStream = CGDisplayStreamCreateWithDispatchQueue(displayId, width, height, format, (__bridge CFDictionaryRef)_recordConfig, _recordQue, handler);
-    if (_displayStream == NULL) {
-        // ????????
-        usleep(5000);
-        _displayStream = CGDisplayStreamCreateWithDispatchQueue(displayId, width, height, format, (__bridge CFDictionaryRef)_recordConfig, _recordQue, handler);
-    }
-    
     _recordCb = recordCb;
     _recordCbUserData = userData;
     _recordCmdCb = recordCmdCb;
     _recordCmdCbUserData = userData2;
     _displayIdx = displayIdx;
+    atomic_store_explicit(&_callbacksEnabled, true, memory_order_release);
 }
 
 - (BOOL)start {
@@ -114,6 +112,7 @@
     CGError err = CGDisplayStreamStart(_displayStream);
     if (err != kCGErrorSuccess) {
         NSLog(@"[ScreenRecorderFallbackImpl::start] Failed to start stream: %d\n", err);
+        atomic_store_explicit(&_callbacksEnabled, false, memory_order_release);
         CFRelease(_displayStream);
         _displayStream = NULL;
         return FALSE;
@@ -127,10 +126,16 @@
     if (_displayStream == NULL) return YES;
     
     _intentionalStop = YES;
-    CGDisplayStreamStop(_displayStream);
+    atomic_store_explicit(&_callbacksEnabled, false, memory_order_release);
+    CGError stopError = CGDisplayStreamStop(_displayStream);
     
+    bool drained = true;
     if (_recordQue) {
-        dispatch_sync(_recordQue, ^{});
+        drained = false;
+        dispatch_semaphore_t drainSema = dispatch_semaphore_create(0);
+        dispatch_async(_recordQue, ^{ dispatch_semaphore_signal(drainSema); });
+        drained = (dispatch_semaphore_wait(drainSema,
+            dispatch_time(DISPATCH_TIME_NOW, 1 * NSEC_PER_SEC)) == 0);
     }
     
     CFRelease(_displayStream);
@@ -138,11 +143,16 @@
     
     NSLog(@"[ScreenRecorderFallbackImpl::stop] Stop Record\n");
     
+    if (stopError != kCGErrorSuccess || !drained) {
+        NSLog(@"[ScreenRecorderFallbackImpl::stop] teardown failed: stop=%d drained=%d",
+              stopError, drained);
+        return NO;
+    }
     return YES;
 }
 
 - (void)processFrame:(IOSurfaceRef)ioSurface displayTime:(uint64_t)displayTime update:(CGDisplayStreamUpdateRef)updateRef {
-    if (_recordCb == NULL) return;
+    if (_recordCb == NULL || !atomic_load_explicit(&_callbacksEnabled, memory_order_acquire)) return;
 
     CVPixelBufferRef pixelBuffer = NULL;
     
@@ -157,7 +167,9 @@
     CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     
     // Deliver recording callback
-    _recordCb(pixelBuffer, dirtyRects, (int)dirtyRectsCnt, _recordCbUserData, _displayIdx);
+    if (atomic_load_explicit(&_callbacksEnabled, memory_order_acquire)) {
+        _recordCb(pixelBuffer, dirtyRects, (int)dirtyRectsCnt, _recordCbUserData, _displayIdx);
+    }
     
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     
@@ -165,7 +177,9 @@
 }
 
 - (void)processStreamStopped {
-    _recordCmdCb(1, _recordCmdCbUserData);
+    if (atomic_load_explicit(&_callbacksEnabled, memory_order_acquire) && _recordCmdCb != NULL) {
+        _recordCmdCb(1, _recordCmdCbUserData);
+    }
 }
 
 @end

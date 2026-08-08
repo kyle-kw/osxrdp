@@ -14,13 +14,15 @@
 
 static NSString *const kSymbolicHotKeysDomain = @"com.apple.symbolichotkeys";
 static NSString *const kAppleSymbolicHotKeys = @"AppleSymbolicHotKeys";
-static NSString *const kNextInputSourceHotKeyID = @"61";
-static const OSStatus kInputSourceError = -1;
+static NSString *const kPreviousInputSourceHotKeyID = @"60";
+static const NSTimeInterval kSwitchTimeout = 0.200;
+static const NSTimeInterval kSwitchRetryTime = 0.100;
+static const int64_t kPollIntervalNs = 10 * NSEC_PER_MSEC;
 
 typedef struct {
     CGKeyCode keyCode;
     CGEventFlags flags;
-} NextInputSourceHotkey;
+} PreviousInputSourceHotkey;
 
 typedef struct {
     CGEventFlags flag;
@@ -194,25 +196,25 @@ static TISInputSourceRef CopyNextInputSource(CFArrayRef inputSources,
     return CopyInputSourceAtIndex(inputSources, nextIndex);
 }
 
-static TISInputSourceRef CopyPreviousInputSource(CFArrayRef inputSources,
-                                                 TISInputSourceRef targetSource)
+static TISInputSourceRef CopyFirstNonCJKVInputSource(CFArrayRef inputSources)
 {
     if (inputSources == NULL) {
         return NULL;
     }
 
     CFIndex count = CFArrayGetCount(inputSources);
-    CFIndex targetIndex = FindInputSourceIndex(inputSources, targetSource);
-
-    if (count <= 0 || targetIndex < 0) {
-        return NULL;
+    for (CFIndex i = 0; i < count; i++) {
+        TISInputSourceRef source =
+            (TISInputSourceRef)CFArrayGetValueAtIndex(inputSources, i);
+        if (source != NULL && !InputSourceIsCJKV(source)) {
+            CFRetain(source);
+            return source;
+        }
     }
-
-    CFIndex previousIndex = (targetIndex - 1 + count) % count;
-    return CopyInputSourceAtIndex(inputSources, previousIndex);
+    return NULL;
 }
 
-static BOOL ReadNextInputSourceHotkey(NextInputSourceHotkey *outHotkey)
+static BOOL ReadPreviousInputSourceHotkey(PreviousInputSourceHotkey *outHotkey)
 {
     if (outHotkey == NULL) {
         return NO;
@@ -232,7 +234,7 @@ static BOOL ReadNextInputSourceHotkey(NextInputSourceHotkey *outHotkey)
     }
 
     NSDictionary *allHotkeys = (NSDictionary *)allHotkeysObject;
-    id hotkeyObject = allHotkeys[kNextInputSourceHotKeyID];
+    id hotkeyObject = allHotkeys[kPreviousInputSourceHotKeyID];
     if (![hotkeyObject isKindOfClass:[NSDictionary class]]) {
         return NO;
     }
@@ -315,20 +317,19 @@ static BOOL PostKeyboardEvent(CGEventSourceRef source,
     }
 
     CGEventSetFlags(event, flags);
-    CGEventPost(kCGHIDEventTap, event);
+    CGEventPost(kCGSessionEventTap, event);
 
     CFRelease(event);
     return YES;
 }
 
-static BOOL PostNextInputSourceShortcut(const NextInputSourceHotkey *hotkey)
+static BOOL PostPreviousInputSourceShortcut(const PreviousInputSourceHotkey *hotkey)
 {
     if (hotkey == NULL) {
         return NO;
     }
 
-    CGEventSourceRef source =
-        CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+    CGEventSourceRef source = [CJKHelper sharedKeyboardEventSource];
 
     if (source == NULL) {
         return NO;
@@ -349,14 +350,12 @@ static BOOL PostNextInputSourceShortcut(const NextInputSourceHotkey *hotkey)
                                modifiers[i].keyCode,
                                YES,
                                flags)) {
-            CFRelease(source);
             return NO;
         }
     }
 
     if (!PostKeyboardEvent(source, hotkey->keyCode, YES, hotkey->flags) ||
         !PostKeyboardEvent(source, hotkey->keyCode, NO, hotkey->flags)) {
-        CFRelease(source);
         return NO;
     }
 
@@ -368,62 +367,43 @@ static BOOL PostNextInputSourceShortcut(const NextInputSourceHotkey *hotkey)
                                mapping.keyCode,
                                NO,
                                flags)) {
-            CFRelease(source);
             return NO;
         }
     }
 
-    CFRelease(source);
     return YES;
 }
 
-static OSStatus SelectInputSourceWithWorkaround(TISInputSourceRef targetSource,
-                                                CFArrayRef inputSources)
+static NSString *InputSourceID(TISInputSourceRef source)
 {
-    if (targetSource == NULL) {
-        return paramErr;
-    }
+    if (source == NULL) return @"";
+    CFTypeRef value = TISGetInputSourceProperty(source, kTISPropertyInputSourceID);
+    if (value == NULL || CFGetTypeID(value) != CFStringGetTypeID()) return @"";
+    return [(__bridge NSString *)value copy];
+}
 
-    if (!InputSourceIsCJKV(targetSource)) {
-        return TISSelectInputSource(targetSource);
-    }
-
-    NextInputSourceHotkey hotkey = {0};
-    if (!ReadNextInputSourceHotkey(&hotkey)) {
-        NSLog(@"[CJKHelper] Failed to read next input source hotkey. Fallback to direct select.");
-        return TISSelectInputSource(targetSource);
-    }
-
-    TISInputSourceRef previousSource =
-        CopyPreviousInputSource(inputSources, targetSource);
-
-    if (previousSource == NULL) {
-        NSLog(@"[CJKHelper] Failed to find previous input source. Fallback to direct select.");
-        return TISSelectInputSource(targetSource);
-    }
-
-    OSStatus status = TISSelectInputSource(previousSource);
-    CFRelease(previousSource);
-
-    if (status != noErr) {
-        NSLog(@"[CJKHelper] Failed to select previous input source. Error: %d",
-              (int)status);
-        return TISSelectInputSource(targetSource);
-    }
-
-    usleep(5000); // hack?
-    
-    if (!PostNextInputSourceShortcut(&hotkey)) {
-        NSLog(@"[CJKHelper] Failed to post next input source shortcut. Fallback to direct select.");
-        return TISSelectInputSource(targetSource);
-    }
-
-    return noErr;
+static NSString *CurrentInputSourceID(void)
+{
+    TISInputSourceRef current = TISCopyCurrentKeyboardInputSource();
+    if (current == NULL) return @"";
+    NSString *sourceID = InputSourceID(current);
+    CFRelease(current);
+    return sourceID;
 }
 
 @implementation CJKHelper
 
-+ (OSStatus)selectNextInputSourceWithWorkaround
++ (CGEventSourceRef)sharedKeyboardEventSource
+{
+    static CGEventSourceRef source = NULL;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
+    });
+    return source;
+}
+
++ (void)selectNextInputSourceWithWorkaround:(CJKInputSourceCompletion)completion
 {
     NSAssert([NSThread isMainThread],
              @"CJKHelper must be called on the main thread.");
@@ -431,14 +411,16 @@ static OSStatus SelectInputSourceWithWorkaround(TISInputSourceRef targetSource,
     CFArrayRef inputSources = CopySelectableKeyboardInputSources();
     if (inputSources == NULL) {
         NSLog(@"[CJKHelper] Failed to get input source list.");
-        return kInputSourceError;
+        completion(NO, @"", CurrentInputSourceID(), 0);
+        return;
     }
 
     TISInputSourceRef currentSource = TISCopyCurrentKeyboardInputSource();
     if (currentSource == NULL) {
         NSLog(@"[CJKHelper] Failed to get current input source.");
         CFRelease(inputSources);
-        return kInputSourceError;
+        completion(NO, @"", @"", 0);
+        return;
     }
 
     TISInputSourceRef nextSource =
@@ -449,16 +431,82 @@ static OSStatus SelectInputSourceWithWorkaround(TISInputSourceRef targetSource,
     if (nextSource == NULL) {
         NSLog(@"[CJKHelper] No selectable input sources found.");
         CFRelease(inputSources);
-        return kInputSourceError;
+        completion(NO, @"", CurrentInputSourceID(), 0);
+        return;
     }
 
-    OSStatus status =
-        SelectInputSourceWithWorkaround(nextSource, inputSources);
+    NSString *targetID = InputSourceID(nextSource);
+    BOOL targetIsCJKV = InputSourceIsCJKV(nextSource);
+    TISInputSourceRef retryTargetSource =
+        (TISInputSourceRef)CFRetain(nextSource);
+    PreviousInputSourceHotkey hotkey = {0};
+    BOOL canRetryShortcut = NO;
+
+    // Selecting the target first puts it into the input-source history. For
+    // CJKV sources, bounce through a non-CJKV source and return via the system
+    // "previous input source" shortcut.
+    OSStatus directStatus = TISSelectInputSource(nextSource);
+    if (directStatus != noErr) {
+        NSLog(@"[CJKHelper] direct select failed target=%@ status=%d",
+              targetID, (int)directStatus);
+    }
+    if (targetIsCJKV && directStatus == noErr) {
+        TISInputSourceRef nonCJKV = CopyFirstNonCJKVInputSource(inputSources);
+        if (nonCJKV != NULL && ReadPreviousInputSourceHotkey(&hotkey)) {
+            if (TISSelectInputSource(nonCJKV) == noErr) {
+                canRetryShortcut = YES;
+                BOOL posted = PostPreviousInputSourceShortcut(&hotkey);
+                NSLog(@"[CJKHelper] workaround target=%@ initial_posted=%d",
+                      targetID, posted);
+            }
+            CFRelease(nonCJKV);
+        }
+        else {
+            NSLog(@"[CJKHelper] CJKV workaround unavailable; verifying direct selection");
+            if (nonCJKV != NULL) CFRelease(nonCJKV);
+        }
+    }
 
     CFRelease(nextSource);
     CFRelease(inputSources);
 
-    return status;
+    CFAbsoluteTime startedAt = CFAbsoluteTimeGetCurrent();
+    __block BOOL retried = NO;
+    __block void (^poll)(void) = nil;
+    poll = ^{
+        NSString *actualID = CurrentInputSourceID();
+        NSTimeInterval elapsed = CFAbsoluteTimeGetCurrent() - startedAt;
+        if ([actualID isEqualToString:targetID]) {
+            CFRelease(retryTargetSource);
+            completion(YES, targetID, actualID, elapsed);
+            poll = nil;
+            return;
+        }
+        if (elapsed >= kSwitchTimeout) {
+            NSLog(@"[CJKHelper] timeout target=%@ actual=%@ elapsed=%.3f retried=%d",
+                  targetID, actualID, elapsed, retried);
+            CFRelease(retryTargetSource);
+            completion(NO, targetID, actualID, elapsed);
+            poll = nil;
+            return;
+        }
+        if (!retried && elapsed >= kSwitchRetryTime) {
+            retried = YES;
+            if (canRetryShortcut) {
+                BOOL posted = PostPreviousInputSourceShortcut(&hotkey);
+                NSLog(@"[CJKHelper] retry shortcut target=%@ elapsed=%.3f posted=%d",
+                      targetID, elapsed, posted);
+            }
+            else {
+                OSStatus retryStatus = TISSelectInputSource(retryTargetSource);
+                NSLog(@"[CJKHelper] retry direct target=%@ elapsed=%.3f status=%d",
+                      targetID, elapsed, (int)retryStatus);
+            }
+        }
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, kPollIntervalNs),
+                       dispatch_get_main_queue(), poll);
+    };
+    poll();
 }
 
 @end

@@ -19,7 +19,7 @@ public:
     bool TryReleaseForReconnect();
     bool ReinitializeForResize();
     
-    void Paint();
+    bool Paint();
     void PaintEnd(int ackFrameId);
     
     // Not thread-safe, but safe because called from the same thread
@@ -38,6 +38,7 @@ private:
     int _recordShmCnt;
     
     xshm_t* _cursorShm;
+    unsigned int _lastCursorGeneration;
     const struct mod* _mod;
     volatile bool _inPainting;
     volatile bool _releasePending;
@@ -45,6 +46,14 @@ private:
     InFlightTracker _inFlightTracker;
     int _sessionId;
     int _needPaintDisplay[16];
+    unsigned int _lastSubmittedPos[16];
+    bool _hasLastSubmittedPos[16];
+    unsigned int _submittedFrameIds[InFlightTracker::IN_FLIGHT_SLOT_COUNT];
+    uint64_t _submittedAtNanos[InFlightTracker::IN_FLIGHT_SLOT_COUNT];
+    uint64_t _submittedFrameCount;
+    uint64_t _ackedFrameCount;
+    uint64_t _skippedFrameCount;
+    uint64_t _rfxFullRedrawRequestCount;
     bool _isLockScreen;
     
     bool GetPaintData(screenrecord_frame_t** outFrameInfo, char** outImgData, size_t* outImgDataSize, int* outWidth, int* outHeight, unsigned int* frame_id, int displayIdx);

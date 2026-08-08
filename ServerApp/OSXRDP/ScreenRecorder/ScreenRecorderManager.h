@@ -5,10 +5,10 @@
 #include "ipc.h"
 #include "xstream.h"
 #include "xshm.h"
-#include "osxrdp/screenrecordshm.h"
 #include "InputHandler.h"
 #include "CursorHandler.h"
 #include "../VirtualMon/VirtualMonitor.h"
+#include "osxrdp/screenrecordshm.h"
 
 class ScreenRecorderManager {
     
@@ -46,6 +46,9 @@ private:
 
     void* _recorder[16];
     int _recorderCnt;
+    // Per-recording callback context. It is detached before SHM teardown so
+    // callbacks arriving after stop cannot dereference this manager.
+    void* _callbackContext;
     
     bool _useLegacyRecorder;
     
@@ -78,6 +81,7 @@ private:
     
     // flag indicating whether next frame should be full redraw.
     bool     _rfxFullRedrawRequired;
+    dispatch_queue_t _rfxConvertQueue;
 
     screenrecord_frame_t _pendingDirty[16];
     bool _pendingDirtyFull[16];
@@ -104,16 +108,16 @@ private:
 
     // recording data handlers
     static void HandleBGRA32RecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
-    static void HandleBGRA32DirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data);
+    static bool HandleBGRA32DirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity);
     
     static void HandleNV12PackedRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
-    static void HandleNV12PackedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data);
+    static bool HandleNV12PackedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity);
     
     static void HandleNV12AlignedRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
-    static void HandleNV12AlignedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data);
+    static bool HandleNV12AlignedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity);
     
     static void HandleRFXRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
-    bool HandleRFXDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, int displayIdx);
+    bool HandleRFXDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity, int displayIdx);
     
     // find a slot to write data
     bool AcquireFrameSlot(screenrecord_shm_t** recordInfoOut, screenrecord_frame** frameOut, char** dataOut, unsigned int* writePosOut, int displayIdx);
@@ -125,13 +129,13 @@ private:
     void SendNeedPaintMsg(int displayIdx);
 
     // write NV12Packed data to memory
-    static bool CopyNV12PackedFrame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
+    static bool CopyNV12PackedFrame(void* imageBuffer, char* screenrecord_data, size_t slotCapacity, int* widthOut, int* heightOut);
     
     // write NV12Aligned data to memory
-    static bool CopyNV12AlignedFrame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
+    static bool CopyNV12AlignedFrame(void* imageBuffer, char* screenrecord_data, size_t slotCapacity, int* widthOut, int* heightOut);
     
     // write BGRA32 data to memory
-    static bool CopyBGRA32Frame(void* imageBuffer, char* screenrecord_data, int* widthOut, int* heightOut);
+    static bool CopyBGRA32Frame(void* imageBuffer, char* screenrecord_data, size_t slotCapacity, int* widthOut, int* heightOut);
 
     // RFX canonical buffer management and BGRA -> YUV444 tile conversion (dirty areas only)
     bool EnsureRFXCanonical(int width, int height);

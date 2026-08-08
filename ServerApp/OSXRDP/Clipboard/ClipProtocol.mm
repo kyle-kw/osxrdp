@@ -42,7 +42,10 @@ bool ClipProtocol_IsSafeRelativePath(const char* path) {
         }
         componentCount++;
         if (*p == '/' || *p == '\\') {
-            p++; // consume separator; next loop detects trailing/empty
+            p++;
+            if (*p == '\0') {
+                return false;
+            }
         }
     }
 

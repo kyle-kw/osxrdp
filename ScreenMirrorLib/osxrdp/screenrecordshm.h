@@ -20,7 +20,8 @@ struct RECT {
 #define MAX_CURSOR_IMG_BUFFER_SIZE (128 * 128)
 
 typedef struct cursor_data {
-    _Atomic int updated;
+    // Seqlock generation: odd while producer writes, even when stable.
+    _Atomic unsigned int generation;
     int width;
     int height;
     int hotspotX;

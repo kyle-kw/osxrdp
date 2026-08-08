@@ -25,6 +25,9 @@ struct ConnectionDiagnosticsSnapshot {
     int frameLag;
     uint64_t totalFramesWritten;
     uint64_t droppedFrames;
+    uint64_t copyFailures;
+    uint64_t rfxFullRedrawRequests;
+    uint64_t imeTimeouts;
 };
 
 class ConnectionDiagnostics {
