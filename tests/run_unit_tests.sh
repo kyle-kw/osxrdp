@@ -146,6 +146,30 @@ build_and_run test_xshm_name \
   "$ROOT/tests/test_xshm_name.c" \
   "$ROOT/ScreenMirrorLib/xshm.c"
 
+build_and_run test_ipc \
+  "$ROOT/tests/test_ipc.c" \
+  "$ROOT/ScreenMirrorLib/ipc.c" \
+  -framework Security \
+  -framework CoreFoundation \
+  -lpthread
+
+build_and_run test_session_protocol \
+  "$ROOT/tests/test_session_protocol.c" \
+  "$ROOT/ScreenMirrorLib/xstream.c" \
+  "$ROOT/ScreenMirrorLib/utils.c" \
+  -framework CoreFoundation \
+  -framework CoreGraphics
+
+if [[ "${RUN_TSAN:-0}" == "1" ]]; then
+  echo ""
+  echo "-- building test_ipc (Thread Sanitizer) --"
+  "$CC" "${CFLAGS[@]}" -fsanitize=thread \
+    "$ROOT/tests/test_ipc.c" "$ROOT/ScreenMirrorLib/ipc.c" \
+    -framework Security -framework CoreFoundation -lpthread \
+    -o "$OUT/test_ipc_tsan"
+  TSAN_OPTIONS="halt_on_error=1" "$OUT/test_ipc_tsan"
+fi
+
 build_and_run_cxx test_status_manager \
   "$ROOT/tests/test_status_manager.cpp" \
   "$ROOT/osxup/Status/StatusManager.cpp"
@@ -175,6 +199,12 @@ build_and_run_objc test_clip_protocol \
 echo ""
 echo "-- test_strings.sh --"
 if ! bash "$ROOT/tests/test_strings.sh"; then
+  failures=$((failures + 1))
+fi
+
+echo ""
+echo "-- test_install_helpers.sh --"
+if ! bash "$ROOT/tests/test_install_helpers.sh"; then
   failures=$((failures + 1))
 fi
 

@@ -176,6 +176,9 @@ InputHandler::~InputHandler() {
         if (dispatch_get_specific(this) == this) shutdown();
         else dispatch_sync(_keyboardQueue, shutdown);
     }
+    // ARC owns dispatch_queue_t fields; draining above is required for lifetime,
+    // but dispatch_release would over-release the queue.
+    _keyboardQueue = NULL;
     if (_keyboardEventRef != 0) {
         CFRelease(_keyboardEventRef);
         _keyboardEventRef = 0;

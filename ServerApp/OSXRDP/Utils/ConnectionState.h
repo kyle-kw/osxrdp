@@ -27,6 +27,9 @@ ConnectionState ConnectionStateResolve(bool accessibilityGranted,
 
 ConnectionPrimaryAction ConnectionPrimaryActionForState(ConnectionState state);
 
+bool ConnectionDesiredRunningFromStoredValue(bool hasStoredValue,
+                                             bool storedValue);
+
 bool ConnectionShouldStartOnLaunch(bool desiredRunning,
                                    bool permissionsGranted,
                                    bool agentRunning);

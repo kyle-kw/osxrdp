@@ -1,10 +1,17 @@
 #include "xstream.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <memory.h>
 
 int _xstream_sizecheck(xstream_t* stream, int size) {
-    if (size <= 0 || stream->size < (stream->data_current - stream->data_start) + size) {
+    if (stream == NULL || size <= 0 || stream->size < 0 ||
+        stream->data_current < stream->data_start) {
+        return 0;
+    }
+
+    ptrdiff_t used = stream->data_current - stream->data_start;
+    if (used > stream->size || size > stream->size - used) {
         return 0;
     }
     
@@ -184,8 +191,10 @@ const void* xstream_readData(xstream_t* stream, int dataSize) {
 const char* xstream_readStr(xstream_t* stream, int* strLen) {
     int len = xstream_readInt32(stream);
     if (len <= 0) return NULL;
-    
-    if (_xstream_sizecheck(stream, len + sizeof(char)) == 0) {
+
+    int remaining = xstream_getRemaining(stream);
+    if (remaining <= 0 || len > remaining - (int)sizeof(char) ||
+        _xstream_sizecheck(stream, len + (int)sizeof(char)) == 0) {
         return NULL;
     }
     if (((char*)stream->data_current)[len] != '\0') return NULL;
@@ -206,4 +215,20 @@ int xstream_getRemaining(xstream_t* stream) {
     }
     
     return stream->size - (int)(stream->data_current - stream->data_start);
+}
+
+int xstream_getPosition(const xstream_t* stream) {
+    if (stream == NULL || stream->data_start == NULL || stream->data_current == NULL) {
+        return -1;
+    }
+    return (int)((const char*)stream->data_current - (const char*)stream->data_start);
+}
+
+int xstream_patchInt32(xstream_t* stream, int offset, int data) {
+    int position = xstream_getPosition(stream);
+    if (offset < 0 || position < 0 || offset > position - (int)sizeof(int)) {
+        return 1;
+    }
+    memcpy((char*)stream->data_start + offset, &data, sizeof(data));
+    return 0;
 }

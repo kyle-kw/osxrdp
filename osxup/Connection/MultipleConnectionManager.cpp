@@ -11,19 +11,24 @@ MultipleConnectionManager::~MultipleConnectionManager() {
     pthread_mutex_destroy(&_lock);
 }
 
-void MultipleConnectionManager::AddConnection(struct mod* mod) {
+bool MultipleConnectionManager::AddConnection(struct mod* mod) {
     if (mod == NULL) {
-        return;
+        return false;
     }
 
     pthread_mutex_lock(&_lock);
 
     if (_CurrentConnected == mod) {
         pthread_mutex_unlock(&_lock);
-        return;
+        return true;
     }
 
-    if (_CurrentConnected != NULL) {
+    if (_CurrentConnected == NULL) {
+        _CurrentConnected = mod;
+        pthread_mutex_unlock(&_lock);
+        return true;
+    }
+    else {
         _CurrentConnected->connectionManager->Terminate();
     }
 
@@ -35,20 +40,13 @@ void MultipleConnectionManager::AddConnection(struct mod* mod) {
         if (_CurrentConnected == NULL) {
             _CurrentConnected = mod;
             pthread_mutex_unlock(&_lock);
-            return;
+            return true;
         }
         pthread_mutex_unlock(&_lock);
         sleep(1);
     }
 
-    // Timed out: take ownership anyway. RemoveConnection(mod) only clears when
-    // the exiting session still owns the slot, so a late previous exit is safe.
-    pthread_mutex_lock(&_lock);
-    if (_CurrentConnected != NULL && _CurrentConnected != mod) {
-        _CurrentConnected->connectionManager->Terminate();
-    }
-    _CurrentConnected = mod;
-    pthread_mutex_unlock(&_lock);
+    return false;
 }
 
 void MultipleConnectionManager::RemoveConnection(struct mod* mod) {

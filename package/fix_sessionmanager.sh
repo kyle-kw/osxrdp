@@ -1,81 +1,53 @@
 #!/bin/bash
-# Repair a broken local install where sessionmanager is killed by Launch Constraint
-# (usually after ad-hoc re-sign overwrote nested code-signing identifiers with the GUI app id).
-#
-# Usage:
-#   sudo bash package/fix_sessionmanager.sh
+# Diagnose signatures and safely restart the installed daemons. This script
+# never changes code signatures; signature problems require reinstalling a package.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=scripts/install_helpers.sh
+source "$SCRIPT_DIR/scripts/install_helpers.sh"
 
 if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root: sudo bash $0"
-  exit 1
+    echo "Run as root: sudo bash $0"
+    exit 1
 fi
 
-APP_BUNDLE="/Applications/osxrdp/OSXRDP.app"
-APP_MACOS="$APP_BUNDLE/Contents/MacOS"
-SM="$APP_MACOS/osxrdp_sessionmanager"
+APP_MACOS="/Applications/osxrdp/OSXRDP.app/Contents/MacOS"
 XRDP="$APP_MACOS/xrdp"
+SESSION_MANAGER="$APP_MACOS/osxrdp_sessionmanager"
+RUNTIME_DIR="/var/run/osxrdp"
 
-if [[ ! -x "$SM" || ! -x "$XRDP" ]]; then
-  echo "ERROR: OSXRDP install not found under /Applications/osxrdp"
-  exit 1
+identifier() {
+    codesign -dv "$1" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}'
+}
+
+[[ -x "$XRDP" && -x "$SESSION_MANAGER" ]] || {
+    echo "ERROR: OSXRDP install is incomplete" >&2
+    exit 1
+}
+[[ "$(identifier "$XRDP")" == "xrdp" ]] || {
+    echo "ERROR: xrdp has the wrong signing identifier; reinstall the package" >&2
+    exit 1
+}
+[[ "$(identifier "$SESSION_MANAGER")" == "com.byungho.osxrdp.sessionmanager" ]] || {
+    echo "ERROR: sessionmanager has the wrong signing identifier; reinstall the package" >&2
+    exit 1
+}
+codesign --verify --strict "$XRDP"
+codesign --verify --strict "$SESSION_MANAGER"
+codesign -dv --verbose=2 "$XRDP" 2>&1 | grep -E 'Identifier|TeamIdentifier|Signature' || true
+codesign -dv --verbose=2 "$SESSION_MANAGER" 2>&1 | grep -E 'Identifier|TeamIdentifier|Signature' || true
+
+if [[ -L "$RUNTIME_DIR" ]]; then
+    echo "ERROR: $RUNTIME_DIR is a symbolic link" >&2
+    exit 1
 fi
+mkdir -p "$RUNTIME_DIR"
+chown root:wheel "$RUNTIME_DIR"
+chmod 700 "$RUNTIME_DIR"
 
-echo "=== Stopping daemons ==="
-launchctl bootout system/com.byungho.osxrdp.sessionmanager 2>/dev/null || true
-launchctl bootout system/com.byungho.osxrdp 2>/dev/null || true
-rm -f /tmp/osxrdpsessionmanager
+osxrdp_restart_daemon com.byungho.osxrdp /Library/LaunchDaemons/com.byungho.osxrdp.plist
+osxrdp_restart_daemon com.byungho.osxrdp.sessionmanager /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist
 
-echo "=== Re-signing nested helpers with distinct identifiers ==="
-codesign --force --sign - -i xrdp "$XRDP"
-codesign --force --sign - -i xrdp-keygen "$APP_MACOS/xrdp-keygen" 2>/dev/null || true
-codesign --force --sign - -i com.byungho.osxrdp.sessionmanager "$SM"
-codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_MACOS/OSXRDP"
-# Seal app without --deep (must not overwrite nested ids).
-codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_BUNDLE"
-
-echo "=== Identifiers ==="
-codesign -dv "$XRDP" 2>&1 | egrep 'Identifier|Team'
-codesign -dv "$SM" 2>&1 | egrep 'Identifier|Team'
-
-# Refresh LaunchDaemon plist ProcessType if missing.
-PLIST="/Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist"
-if [[ -f "$PLIST" ]] && ! grep -q ProcessType "$PLIST"; then
-  echo "=== Adding ProcessType=Interactive to sessionmanager plist ==="
-  /usr/libexec/PlistBuddy -c 'Add :ProcessType string Interactive' "$PLIST" 2>/dev/null \
-    || /usr/libexec/PlistBuddy -c 'Set :ProcessType Interactive' "$PLIST"
-fi
-
-xattr -dr com.apple.quarantine /Applications/osxrdp 2>/dev/null || true
-xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null || true
-xattr -d com.apple.quarantine "$PLIST" 2>/dev/null || true
-
-mkdir -p /Library/Logs/osxrdp
-chmod 755 /Library/Logs/osxrdp
-
-echo "=== Starting daemons ==="
-launchctl bootstrap system /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null || true
-launchctl enable system/com.byungho.osxrdp
-launchctl kickstart -k system/com.byungho.osxrdp
-
-launchctl bootstrap system "$PLIST" 2>/dev/null || true
-launchctl enable system/com.byungho.osxrdp.sessionmanager
-launchctl kickstart -k system/com.byungho.osxrdp.sessionmanager
-
-sleep 1
-echo "=== Status ==="
-ps aux | grep -E 'osxrdp_sessionmanager|/MacOS/xrdp ' | grep -v grep || true
-echo "socket:"
-ls -la /tmp/osxrdpsessionmanager 2>/dev/null || echo "(no socket yet)"
-echo "sessionmanager log (tail):"
-tail -5 /Library/Logs/osxrdp/osxrdp_sessionmanager.log 2>/dev/null || echo "(no log yet)"
-
-if pgrep -x osxrdp_sessionmanager >/dev/null; then
-  echo "OK: osxrdp_sessionmanager is running"
-  exit 0
-fi
-
-echo "FAILED: sessionmanager still not running. Check:"
-echo "  launchctl print system/com.byungho.osxrdp.sessionmanager"
-echo "  log show --last 5m --predicate 'eventMessage CONTAINS \"sessionmanager\"'"
-exit 1
+echo "Sessionmanager socket:"
+ls -la "$RUNTIME_DIR/sessionmanager.sock"
+echo "OK: installed signatures and launchd jobs are valid"

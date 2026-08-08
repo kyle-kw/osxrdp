@@ -5,6 +5,7 @@
 #include "xstream.h"
 #include "ClipProtocol.h"
 #include <pthread.h>
+#include <dispatch/dispatch.h>
 #include <stdint.h>
 
 #ifdef __OBJC__
@@ -42,6 +43,8 @@ public:
     ~ClipboardManager();
 
     void HandleCommand(xipc_t* client, xstream_t* cmd);
+    // Prevents new sends to client and waits for an in-progress enqueue to finish.
+    void DetachClient(xipc_t* client);
     bool HasRemoteFiles();
     int RemoteFileCount();
     void StartRemoteFileCopy();
@@ -82,6 +85,8 @@ private:
     int _fileCopyItemTotal;
     int _fileCopyStreamId;
     int _fileCopyExpectedStreamId;
+    int _fileCopyExpectedRequestedLength;
+    uint64_t _fileCopyExpectedFileSize;
     int _fileCopyCurrentLindex;
     uint64_t _fileCopyCurrentOffset;
     uint64_t _fileCopyTotalBytes;
@@ -93,9 +98,9 @@ private:
     int _fileCopyAutoInitiated;
 
     pthread_mutex_t _lock;
-    pthread_t _monitorThread;
-    int _monitorThreadRunning;
-    int _monitorStopRequested;
+    pthread_mutex_t _clientGateLock;
+    dispatch_queue_t _pasteboardQueue;
+    dispatch_source_t _monitorTimer;
 
     void ResetChannelBuffer();
     bool AssembleChannelData(int channelFlags, int totalLen, const void* data, int dataLen, const void** completeData, int* completeLen);
@@ -115,9 +120,9 @@ private:
     void FindRequestedFormatShortName(xstream_t* clipStream, int msgLen, int* formatId, PendingClipType* clipType);
     bool FindRemoteFileFormats(int msgFlags, int msgLen, xstream_t* clipStream, int* fileGroupFormatId, int* fileContentsFormatId);
 
-    static void* MonitorThreadEntry(void* arg);
-    void MonitorClipboardLoop();
     void ProcessLocalClipboardChange(int forceSend);
+    bool IsOnPasteboardQueue() const;
+    int SendClientData(xipc_t* expectedClient, const void* data, int dataLen);
 
     void SendFormatAck(xipc_t* client, bool success);
     void SendFormatList(xipc_t* client);

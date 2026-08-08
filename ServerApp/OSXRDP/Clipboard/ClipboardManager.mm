@@ -7,6 +7,7 @@
 #include "ClipProtocol.h"
 #include "osxrdp/packet.h"
 #include <stdint.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -510,8 +511,6 @@ ClipboardManager::ClipboardManager()
 , _pendingClipType(PendingClipType_None)
 , _pendingTextFormatId(0)
 , _pendingTextRetryCount(0)
-, _monitorThreadRunning(0)
-, _monitorStopRequested(0)
 , _client(NULL)
 , _lastChangeCount(INVALID_CHANGE_COUNT)
 , _remoteUpdateInProgress(false)
@@ -528,6 +527,8 @@ ClipboardManager::ClipboardManager()
 , _fileCopyItemTotal(0)
 , _fileCopyStreamId(1)
 , _fileCopyExpectedStreamId(0)
+, _fileCopyExpectedRequestedLength(0)
+, _fileCopyExpectedFileSize(0)
 , _fileCopyCurrentLindex(0)
 , _fileCopyCurrentOffset(0)
 , _fileCopyTotalBytes(0)
@@ -536,19 +537,35 @@ ClipboardManager::ClipboardManager()
 , _fileCopyCurrentPath(NULL)
 , _fileCopyCurrentHandle(NULL)
 , _fileCopyDestinationFolder(NULL)
-, _fileCopyAutoInitiated(0) {
+, _fileCopyAutoInitiated(0)
+, _pasteboardQueue(NULL)
+, _monitorTimer(NULL) {
     pthread_mutex_init(&_lock, NULL);
+    pthread_mutex_init(&_clientGateLock, NULL);
     _localFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
     _remoteFileItems = (__bridge_retained void*)[[NSMutableArray alloc] init];
 
-    NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
-    if (pasteboard != nil) {
-        _lastChangeCount = (int)[pasteboard changeCount];
-    }
+    _pasteboardQueue = dispatch_queue_create("com.byungho.osxrdp.clipboard", DISPATCH_QUEUE_SERIAL);
+    dispatch_queue_set_specific(_pasteboardQueue, this, this, NULL);
+    dispatch_sync(_pasteboardQueue, ^{
+        NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+        if (pasteboard != nil) {
+            _lastChangeCount = (int)[pasteboard changeCount];
+        }
+    });
 
-    // Clipboard monitoring thread
-    if (pthread_create(&_monitorThread, NULL, MonitorThreadEntry, this) == 0) {
-        _monitorThreadRunning = 1;
+    _monitorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, _pasteboardQueue);
+    if (_monitorTimer != NULL) {
+        dispatch_source_set_timer(_monitorTimer,
+                                  dispatch_time(DISPATCH_TIME_NOW, CLIPBOARD_MONITOR_INTERVAL_US * NSEC_PER_USEC),
+                                  CLIPBOARD_MONITOR_INTERVAL_US * NSEC_PER_USEC,
+                                  50 * NSEC_PER_MSEC);
+        dispatch_source_set_event_handler(_monitorTimer, ^{
+            @autoreleasepool {
+                ProcessLocalClipboardChange(0);
+            }
+        });
+        dispatch_resume(_monitorTimer);
     }
 }
 
@@ -557,14 +574,16 @@ int ClipboardManager::GetRequestedFormatPriority(PendingClipType clipType, int f
 }
 
 ClipboardManager::~ClipboardManager() {
-    pthread_mutex_lock(&_lock);
-    _monitorStopRequested = 1;
-    pthread_mutex_unlock(&_lock);
-
-    if (_monitorThreadRunning != 0) {
-        pthread_join(_monitorThread, NULL);
-        _monitorThreadRunning = 0;
+    DetachClient(NULL);
+    if (_monitorTimer != NULL) {
+        dispatch_source_cancel(_monitorTimer);
     }
+    if (_pasteboardQueue != NULL && !IsOnPasteboardQueue()) {
+        dispatch_sync(_pasteboardQueue, ^{});
+    }
+    // dispatch queue/source are Objective-C objects and are owned by ARC.
+    _monitorTimer = NULL;
+    _pasteboardQueue = NULL;
 
     ResetChannelBuffer();
     if (_localFileItems != NULL) {
@@ -591,7 +610,41 @@ ClipboardManager::~ClipboardManager() {
         CFRelease(_fileCopyDestinationFolder);
         _fileCopyDestinationFolder = NULL;
     }
+    pthread_mutex_destroy(&_clientGateLock);
     pthread_mutex_destroy(&_lock);
+}
+
+bool ClipboardManager::IsOnPasteboardQueue() const {
+    return _pasteboardQueue != NULL && dispatch_get_specific((const void*)this) == this;
+}
+
+void ClipboardManager::DetachClient(xipc_t* client) {
+    bool detached = false;
+    pthread_mutex_lock(&_clientGateLock);
+    if (client == NULL || _client == client) {
+        detached = _client != NULL;
+        _client = NULL;
+    }
+    pthread_mutex_unlock(&_clientGateLock);
+
+    if (detached) {
+        pthread_mutex_lock(&_lock);
+        bool copying = _fileCopyInProgress != 0;
+        pthread_mutex_unlock(&_lock);
+        if (copying) {
+            FinishRemoteFileCopy(FileCopyFinishReason_Disconnected);
+        }
+    }
+}
+
+int ClipboardManager::SendClientData(xipc_t* expectedClient, const void* data, int dataLen) {
+    pthread_mutex_lock(&_clientGateLock);
+    int result = -1;
+    if (expectedClient != NULL && _client == expectedClient && !xipc_is_closed(expectedClient)) {
+        result = xipc_send_data(expectedClient, data, dataLen);
+    }
+    pthread_mutex_unlock(&_clientGateLock);
+    return result;
 }
 
 bool ClipboardManager::HasRemoteFiles() {
@@ -809,13 +862,13 @@ void ClipboardManager::ResetChannelBuffer() {
 void ClipboardManager::UpdateRemoteClipboardContext(xipc_t* client) {
     int shouldSendInitialFormatList = 0;
 
-    pthread_mutex_lock(&_lock);
+    pthread_mutex_lock(&_clientGateLock);
     if (client != NULL && _client != client) {
         shouldSendInitialFormatList = 1;
     }
 
     _client = client;
-    pthread_mutex_unlock(&_lock);
+    pthread_mutex_unlock(&_clientGateLock);
 
     if (shouldSendInitialFormatList != 0) {
         ProcessLocalClipboardChange(1);
@@ -1108,12 +1161,15 @@ void ClipboardManager::HandleDataResponse(xstream_t* clipStream, int msgFlags, i
     }
 
     if ((msgFlags & CB_RESPONSE_FAIL) != 0 || (msgFlags & CB_RESPONSE_OK) == 0) {
+        pthread_mutex_lock(&_clientGateLock);
+        xipc_t* retryClient = _client;
+        pthread_mutex_unlock(&_clientGateLock);
         if (_pendingClipType == PendingClipType_Text &&
             _pendingTextFormatId == CF_UNICODETEXT &&
             _pendingTextRetryCount == 0 &&
-            _client != NULL) {
+            retryClient != NULL) {
             _pendingTextRetryCount = 1;
-            SendDataRequest(_client, CF_UNICODETEXT);
+            SendDataRequest(retryClient, CF_UNICODETEXT);
             return;
         }
         _pendingClipType = PendingClipType_None;
@@ -1418,43 +1474,21 @@ bool ClipboardManager::FindRemoteFileFormats(int msgFlags, int msgLen, xstream_t
     return *fileGroupFormatId != 0 && *fileContentsFormatId != 0;
 }
 
-void* ClipboardManager::MonitorThreadEntry(void* arg) {
-    ClipboardManager* _this = (ClipboardManager*)arg;
-    if (_this == NULL) {
-        return NULL;
-    }
-
-    @autoreleasepool {
-        _this->MonitorClipboardLoop();
-    }
-
-    return NULL;
-}
-
-void ClipboardManager::MonitorClipboardLoop() {
-    while (1) {
-        pthread_mutex_lock(&_lock);
-        int shouldStop = _monitorStopRequested;
-        pthread_mutex_unlock(&_lock);
-
-        if (shouldStop != 0) {
-            break;
-        }
-
-        @autoreleasepool {
-            ProcessLocalClipboardChange(0);
-        }
-
-        usleep(CLIPBOARD_MONITOR_INTERVAL_US);
-    }
-}
-
 void ClipboardManager::ProcessLocalClipboardChange(int forceSend) {
+    if (!IsOnPasteboardQueue()) {
+        dispatch_async(_pasteboardQueue, ^{
+            ProcessLocalClipboardChange(forceSend);
+        });
+        return;
+    }
+
     xipc_t* client = NULL;
     int lastChangeCount = 0;
 
-    pthread_mutex_lock(&_lock);
+    pthread_mutex_lock(&_clientGateLock);
     client = _client;
+    pthread_mutex_unlock(&_clientGateLock);
+    pthread_mutex_lock(&_lock);
     lastChangeCount = _lastChangeCount;
     pthread_mutex_unlock(&_lock);
 
@@ -1502,6 +1536,13 @@ void ClipboardManager::SendFormatAck(xipc_t* client, bool success) {
 }
 
 void ClipboardManager::SendFormatList(xipc_t* client) {
+    if (!IsOnPasteboardQueue()) {
+        dispatch_sync(_pasteboardQueue, ^{
+            SendFormatList(client);
+        });
+        return;
+    }
+
     NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
     if (pasteboard == nil) {
         return;
@@ -1824,6 +1865,7 @@ void ClipboardManager::SendChannelDataParts(xipc_t* client, const void* header, 
 
         xstream_t* stream = xstream_create(chunkLen + sizeof(int) * 5);
         if (stream == NULL) {
+            free(chunkBuffer);
             return;
         }
 
@@ -1836,7 +1878,11 @@ void ClipboardManager::SendChannelDataParts(xipc_t* client, const void* header, 
 
         int bufferLen = 0;
         const void* buffer = xstream_get_raw_buffer(stream, &bufferLen);
-        xipc_send_data(client, buffer, bufferLen);
+        if (SendClientData(client, buffer, bufferLen) < 0) {
+            xstream_free(stream);
+            free(chunkBuffer);
+            return;
+        }
 
         xstream_free(stream);
         free(chunkBuffer);
@@ -1845,6 +1891,14 @@ void ClipboardManager::SendChannelDataParts(xipc_t* client, const void* header, 
 }
 
 bool ClipboardManager::UpdatePasteboardFileItems(int* itemCount) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = UpdatePasteboardFileItems(itemCount);
+        });
+        return result;
+    }
+
     if (itemCount != NULL) {
         *itemCount = 0;
     }
@@ -2099,6 +2153,8 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
     _fileCopyCurrentItemIndex = 0;
     _fileCopyItemTotal = (int)[items count];
     _fileCopyExpectedStreamId = 0;
+    _fileCopyExpectedRequestedLength = 0;
+    _fileCopyExpectedFileSize = 0;
     _fileCopyCurrentLindex = 0;
     _fileCopyCurrentOffset = 0;
     _fileCopyTransferredBytes = 0;
@@ -2119,9 +2175,11 @@ void ClipboardManager::BeginRemoteFileCopyToFolder(NSURL* folderUrl) {
 void ClipboardManager::StartNextRemoteFileItem() {
     @autoreleasepool {
         while (1) {
+            pthread_mutex_lock(&_clientGateLock);
+            xipc_t* client = _client;
+            pthread_mutex_unlock(&_clientGateLock);
             pthread_mutex_lock(&_lock);
             bool cancelled = _fileCopyCancelled != 0;
-            xipc_t* client = _client;
             NSMutableArray* items = RemoteFileItems(_remoteFileItems);
             int itemIndex = _fileCopyCurrentItemIndex;
             pthread_mutex_unlock(&_lock);
@@ -2213,14 +2271,16 @@ void ClipboardManager::StartNextRemoteFileItem() {
 }
 
 void ClipboardManager::RequestCurrentRemoteFileChunk() {
-    pthread_mutex_lock(&_lock);
+    pthread_mutex_lock(&_clientGateLock);
     xipc_t* client = _client;
+    pthread_mutex_unlock(&_clientGateLock);
+    pthread_mutex_lock(&_lock);
     NSMutableArray* items = RemoteFileItems(_remoteFileItems);
     int itemIndex = _fileCopyCurrentItemIndex;
     int lindex = _fileCopyCurrentLindex;
     uint64_t offset = _fileCopyCurrentOffset;
-    int streamId = _fileCopyStreamId++;
-    _fileCopyExpectedStreamId = streamId;
+    int streamId = _fileCopyStreamId;
+    _fileCopyStreamId = _fileCopyStreamId == INT_MAX ? 1 : _fileCopyStreamId + 1;
     uint64_t fileSize = 0;
     if (itemIndex >= 0 && itemIndex < (int)[items count]) {
         fileSize = [[[items objectAtIndex:itemIndex] objectForKey:@"size"] unsignedLongLongValue];
@@ -2238,6 +2298,11 @@ void ClipboardManager::RequestCurrentRemoteFileChunk() {
 
     uint64_t remaining = fileSize - offset;
     int requested = remaining > REMOTE_FILE_COPY_CHUNK_SIZE ? REMOTE_FILE_COPY_CHUNK_SIZE : (int)remaining;
+    pthread_mutex_lock(&_lock);
+    _fileCopyExpectedStreamId = streamId;
+    _fileCopyExpectedRequestedLength = requested;
+    _fileCopyExpectedFileSize = fileSize;
+    pthread_mutex_unlock(&_lock);
     SendFileContentsRequest(client, streamId, lindex, FILECONTENTS_RANGE, offset, requested);
 }
 
@@ -2252,13 +2317,23 @@ void ClipboardManager::HandleFileContentsResponse(xstream_t* clipStream, int msg
     const void* data = xstream_readData(clipStream, dataLen);
 
     pthread_mutex_lock(&_lock);
-    bool valid = _fileCopyInProgress != 0 && _fileCopyExpectedStreamId == streamId && _fileCopyCancelled == 0;
+    bool active = _fileCopyInProgress != 0 && _fileCopyCancelled == 0;
+    int expectedStreamId = _fileCopyExpectedStreamId;
+    int requestedLength = _fileCopyExpectedRequestedLength;
+    uint64_t expectedOffset = _fileCopyCurrentOffset;
+    uint64_t expectedFileSize = _fileCopyExpectedFileSize;
     NSFileHandle* handle = FileCopyCurrentHandle(_fileCopyCurrentHandle);
     NSMutableArray* items = RemoteFileItems(_remoteFileItems);
     int itemIndex = _fileCopyCurrentItemIndex;
     pthread_mutex_unlock(&_lock);
 
-    if (valid == false || handle == nil || (data == NULL && dataLen > 0)) {
+    if (!active) {
+        return;
+    }
+    if (handle == nil || data == NULL ||
+        !ClipProtocol_ValidateFileChunk(expectedStreamId, streamId, requestedLength,
+                                        expectedOffset, expectedFileSize, dataLen)) {
+        FinishRemoteFileCopy(FileCopyFinishReason_ProtocolFailed);
         return;
     }
 
@@ -2309,6 +2384,10 @@ void ClipboardManager::HandleFileContentsResponse(xstream_t* clipStream, int msg
 
 void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     pthread_mutex_lock(&_lock);
+    if (_fileCopyInProgress == 0) {
+        pthread_mutex_unlock(&_lock);
+        return;
+    }
     if (_fileCopyCancelled != 0 && reason != FileCopyFinishReason_Success) {
         reason = FileCopyFinishReason_Cancelled;
     }
@@ -2337,6 +2416,8 @@ void ClipboardManager::FinishRemoteFileCopy(FileCopyFinishReason reason) {
     _fileCopyChoosingFolder = 0;
     _fileCopyCancelled = 0;
     _fileCopyExpectedStreamId = 0;
+    _fileCopyExpectedRequestedLength = 0;
+    _fileCopyExpectedFileSize = 0;
     _fileCopyCurrentItemIndex = 0;
     _fileCopyItemTotal = 0;
     _fileCopyCurrentOffset = 0;
@@ -2561,6 +2642,14 @@ void ClipboardManager::UpdateFileCopyWindow(NSString* fileName) {
 }
 
 bool ClipboardManager::GetPasteboardText(char** utf8Text, int* utf8Len, int* changeCount) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = GetPasteboardText(utf8Text, utf8Len, changeCount);
+        });
+        return result;
+    }
+
     if (changeCount == NULL) {
         return false;
     }
@@ -2606,6 +2695,14 @@ bool ClipboardManager::GetPasteboardText(char** utf8Text, int* utf8Len, int* cha
 }
 
 bool ClipboardManager::GetPasteboardRtf(char** rtfData, int* rtfLen) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = GetPasteboardRtf(rtfData, rtfLen);
+        });
+        return result;
+    }
+
     if (rtfData == NULL || rtfLen == NULL) {
         return false;
     }
@@ -2636,6 +2733,14 @@ bool ClipboardManager::GetPasteboardRtf(char** rtfData, int* rtfLen) {
 }
 
 bool ClipboardManager::GetPasteboardImage(char** dibData, int* dibLen) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = GetPasteboardImage(dibData, dibLen);
+        });
+        return result;
+    }
+
     if (dibData == NULL || dibLen == NULL) {
         return false;
     }
@@ -2710,6 +2815,14 @@ bool ClipboardManager::BuildWindowsText(const char* utf8Text, int utf8Len, int f
 }
 
 bool ClipboardManager::SetTextToPasteboard(const void* data, int dataLen, int formatId) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = SetTextToPasteboard(data, dataLen, formatId);
+        });
+        return result;
+    }
+
     if ((data == NULL && dataLen > 0) || dataLen < 0) {
         return false;
     }
@@ -2764,6 +2877,14 @@ bool ClipboardManager::SetTextToPasteboard(const void* data, int dataLen, int fo
 }
 
 bool ClipboardManager::SetRtfToPasteboard(const void* data, int dataLen) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = SetRtfToPasteboard(data, dataLen);
+        });
+        return result;
+    }
+
     if ((data == NULL && dataLen > 0) || dataLen < 0) {
         return false;
     }
@@ -2806,6 +2927,14 @@ bool ClipboardManager::SetRtfToPasteboard(const void* data, int dataLen) {
 }
 
 bool ClipboardManager::SetImageToPasteboard(const void* data, int dataLen) {
+    if (!IsOnPasteboardQueue()) {
+        __block bool result = false;
+        dispatch_sync(_pasteboardQueue, ^{
+            result = SetImageToPasteboard(data, dataLen);
+        });
+        return result;
+    }
+
     char* bmpData = NULL;
     int bmpLen = 0;
 

@@ -141,6 +141,22 @@ TEST_CASE(test_send_screen_resize_msg_with_monitors) {
     EXPECT_EQ_INT(read_int32_at(72), 0);     // is_primary
 }
 
+TEST_CASE(test_send_record_start_clamps_monitor_count) {
+    Command cmd;
+    xipc_t dummyIpc = {};
+    struct monitor_info monitors[17] = {};
+    for (int i = 0; i < 17; i++) {
+        monitors[i].right = i + 1;
+    }
+
+    g_capturedLen = 0;
+    cmd.SendRecordStartMsg(&dummyIpc, 1920, 1080, 0, 1, 17, monitors);
+
+    EXPECT_EQ_INT(read_int32_at(32), 16);
+    EXPECT_EQ_INT(g_capturedLen, (9 + 16 * 5) * (int)sizeof(int32_t));
+    EXPECT_EQ_INT(read_int32_at(36 + 15 * 20 + 8), 16);
+}
+
 int main(void) {
     RUN_TEST(test_send_record_stop_msg);
     RUN_TEST(test_send_mouse_input_msg);
@@ -148,5 +164,6 @@ int main(void) {
     RUN_TEST(test_send_screen_resize_msg);
     RUN_TEST(test_send_screen_resize_msg_odd_dimensions);
     RUN_TEST(test_send_screen_resize_msg_with_monitors);
+    RUN_TEST(test_send_record_start_clamps_monitor_count);
     return test_main_finish("test_command_packing");
 }

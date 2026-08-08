@@ -24,6 +24,7 @@ private:
     
     // Connection ID for fetching cursor info
     int _connectionId;
+    bool _available;
     
     long long _lastCheckTime;
     

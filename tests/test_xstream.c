@@ -85,6 +85,21 @@ TEST_CASE(create_for_read_rejects_bad_args) {
     EXPECT_NULL(xstream_create_for_read(data, 0));
 }
 
+TEST_CASE(position_and_checked_patch) {
+    xstream_t* s = xstream_create(16);
+    EXPECT_NOT_NULL(s);
+    EXPECT_EQ_INT(xstream_getPosition(s), 0);
+    EXPECT_EQ_INT(xstream_writeInt32(s, 0), 0);
+    EXPECT_EQ_INT(xstream_writeInt32(s, 9), 0);
+    EXPECT_EQ_INT(xstream_getPosition(s), 8);
+    EXPECT_EQ_INT(xstream_patchInt32(s, 0, 7), 0);
+    EXPECT_EQ_INT(xstream_patchInt32(s, 6, 1), 1);
+    xstream_resetPos(s);
+    EXPECT_EQ_INT(xstream_readInt32(s), 7);
+    EXPECT_EQ_INT(xstream_readInt32(s), 9);
+    xstream_free(s);
+}
+
 int main(void) {
     printf("== test_xstream ==\n");
     RUN_TEST(create_rejects_non_positive_size);
@@ -94,5 +109,6 @@ int main(void) {
     RUN_TEST(read_str_requires_nul_terminator);
     RUN_TEST(read_str_accepts_nul_terminator);
     RUN_TEST(create_for_read_rejects_bad_args);
+    RUN_TEST(position_and_checked_patch);
     return test_main_finish("test_xstream");
 }

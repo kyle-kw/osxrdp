@@ -15,6 +15,7 @@ extern "C" {
 #endif
 
 int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* sessionInfo);
+int osxrdp_sessionmanager_validate_user(const char* username, int usernameLen);
 int osxrdp_sessionmanager_createsession(session_info_t* created_sessionInfo);
 void osxrdp_sessionmanager_releasesession(int sessionId);
 

@@ -3,12 +3,14 @@
 #import <Foundation/Foundation.h>
 #include <unistd.h>
 #include <string.h>
+#include <new>
 #include "../Utils/PermissionCheckUtils.h"
 #include "osxrdp/packet.h"
 #include "utils.h"
 
 static const char* kTrustedClientTeamId = "33X7M69J4B";
 static const char* kTrustedClientSigningIdentifier = "xrdp";
+static const char* kTrustedClientAdhocPath = "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/xrdp";
 
 MirrorAppServer::MirrorAppServer()
 : _cmdPipe(NULL)
@@ -144,10 +146,20 @@ bool MirrorAppServer::CreateCommandPipeServer() {
         return false;
     }
     
-    char server_path[512];
-    
-    if (get_object_name_by_sessionid("/tmp/osxrdp", server_path, 512, is_root_process()) == 0) {
-        NSLog(@"[MirrorAppServer]::CreateCommandPipeServer get_object_name_by_sessionid failed.");
+    char socketDirectory[512] = {0};
+    char server_path[512] = {0};
+    uid_t ownerUid = geteuid();
+    if (osxrdp_get_agent_socket_directory(ownerUid, socketDirectory, sizeof(socketDirectory)) == 0 ||
+        xipc_prepare_private_directory(socketDirectory, ownerUid, (gid_t)-1) != 0) {
+        NSLog(@"[MirrorAppServer]::CreateCommandPipeServer could not prepare secure socket directory.");
+        xipc_destroy(cmdPipe);
+        return false;
+    }
+
+    int sessionId = get_current_session_id();
+    if (sessionId <= 0 ||
+        osxrdp_get_agent_socket_path(ownerUid, sessionId, server_path, sizeof(server_path), is_root_process()) == 0) {
+        NSLog(@"[MirrorAppServer]::CreateCommandPipeServer could not build secure socket path.");
         xipc_destroy(cmdPipe);
         return false;
     }
@@ -221,18 +233,20 @@ void* MirrorAppServer::IoThreadEntry(void* arg) {
     return NULL;
 }
 
-static void TearDownClientCtx(struct MirrorAppClientCtx* ctx) {
+static void TearDownClientCtx(struct MirrorAppClientCtx* ctx, xipc_t* client) {
     if (ctx == NULL) {
         return;
     }
 
     if (ctx->ScreenRecorder != NULL) {
         ctx->ScreenRecorder->Stop();
+        ctx->ScreenRecorder->DetachClient(client);
         delete ctx->ScreenRecorder;
         ctx->ScreenRecorder = NULL;
     }
 
     if (ctx->Clipboard != NULL) {
+        ctx->Clipboard->DetachClient(client);
         ClipboardManager* clipboardToDelete = ctx->Clipboard;
         ctx->Clipboard = NULL;
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -240,7 +254,7 @@ static void TearDownClientCtx(struct MirrorAppClientCtx* ctx) {
         });
     }
 
-    free(ctx);
+    delete ctx;
 }
 
 static void ForceCloseClient(xipc_t* client) {
@@ -248,7 +262,7 @@ static void ForceCloseClient(xipc_t* client) {
         return;
     }
 
-    client->closed = 1;
+    xipc_close(client);
     if (client->fd >= 0) {
         close(client->fd);
         client->fd = -1;
@@ -272,22 +286,27 @@ int MirrorAppServer::OnClientConnected(xipc_t* t, xipc_t* client) {
             if (oldCtx != NULL && oldCtx->ScreenRecorder != NULL) {
                 oldCtx->ScreenRecorder->SendDisconnectMsgToClient();
             }
-            TearDownClientCtx(oldCtx);
+            TearDownClientCtx(oldCtx, oldClient);
             ForceCloseClient(oldClient);
         }
         
-        struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)malloc(sizeof(struct MirrorAppClientCtx));
+        struct MirrorAppClientCtx* ctx = new (std::nothrow) MirrorAppClientCtx();
         if (ctx == NULL) {
             pthread_mutex_unlock(&_this->_clientLock);
             ForceCloseClient(client);
             return 0;
         }
 
-        memset(ctx, 0, sizeof(*ctx));
-        ctx->ScreenRecorder = _this->CreateScreenRecorder();
-        ctx->Clipboard = new ClipboardManager();
+        try {
+            ctx->ScreenRecorder = _this->CreateScreenRecorder();
+            ctx->Clipboard = new (std::nothrow) ClipboardManager();
+        }
+        catch (...) {
+            // No exception may escape this C callback. The value-initialized,
+            // partially constructed context is released below.
+        }
         if (ctx->ScreenRecorder == NULL || ctx->Clipboard == NULL) {
-            TearDownClientCtx(ctx);
+            TearDownClientCtx(ctx, client);
             pthread_mutex_unlock(&_this->_clientLock);
             ForceCloseClient(client);
             return 0;
@@ -304,13 +323,8 @@ int MirrorAppServer::OnClientConnected(xipc_t* t, xipc_t* client) {
 
 int MirrorAppServer::OnClientAuthorize(xipc_t* t, xipc_t* client) {
     (void)t;
-#if DEBUG
-    return 0;
-#else
-    // Accept official Team ID, same-team local Developer signing, or ad-hoc
-    // xrdp installed under /Applications/osxrdp (see xipc_is_trusted_xrdp_client).
-    return xipc_is_trusted_xrdp_client(client, kTrustedClientTeamId, kTrustedClientSigningIdentifier);
-#endif
+    return xipc_is_trusted_peer(client, kTrustedClientTeamId,
+                                kTrustedClientSigningIdentifier, kTrustedClientAdhocPath);
 }
 
 int MirrorAppServer::OnClientRejected(xipc_t* t, xipc_t* client) {
@@ -341,7 +355,7 @@ int MirrorAppServer::OnClientDisconnected(xipc_t* t, xipc_t* client) {
 
         struct MirrorAppClientCtx* ctx = (struct MirrorAppClientCtx*)client->user_data;
         client->user_data = NULL;
-        TearDownClientCtx(ctx);
+        TearDownClientCtx(ctx, client);
 
         return 0;
     }
@@ -435,5 +449,3 @@ ScreenRecorderManager* MirrorAppServer::CreateScreenRecorder() {
         return new ScreenRecorderManager(true);
     }
 }
-
-

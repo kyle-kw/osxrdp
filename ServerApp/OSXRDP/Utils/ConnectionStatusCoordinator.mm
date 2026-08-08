@@ -3,6 +3,7 @@
 #include "../RemoteConnection/RemoteConnectionService.h"
 
 NSNotificationName const OSXRDPConnectionStatusDidChangeNotification = @"OSXRDPConnectionStatusDidChangeNotification";
+static NSString* const OSXRDPDesiredRunningKey = @"OSXRDPDesiredRunning";
 
 @interface ConnectionStatusCoordinator ()
 
@@ -30,7 +31,10 @@ NSNotificationName const OSXRDPConnectionStatusDidChangeNotification = @"OSXRDPC
 - (instancetype)init {
     self = [super init];
     if (self != nil) {
-        _desiredRunning = YES;
+        NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+        BOOL hasStoredValue = [defaults objectForKey:OSXRDPDesiredRunningKey] != nil;
+        _desiredRunning = ConnectionDesiredRunningFromStoredValue(hasStoredValue,
+                                                                  [defaults boolForKey:OSXRDPDesiredRunningKey]);
         _starting = NO;
         _monitoring = NO;
         _snapshot = ConnectionDiagnostics::Capture();
@@ -94,6 +98,7 @@ NSNotificationName const OSXRDPConnectionStatusDidChangeNotification = @"OSXRDPC
 
 - (void)startService {
     self.desiredRunning = YES;
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:OSXRDPDesiredRunningKey];
     [self captureAndPublish];
     if (!_snapshot.accessibilityGranted || !_snapshot.screenRecordingGranted || _snapshot.agentRunning) {
         return;
@@ -108,6 +113,7 @@ NSNotificationName const OSXRDPConnectionStatusDidChangeNotification = @"OSXRDPC
 
 - (void)stopService {
     self.desiredRunning = NO;
+    [[NSUserDefaults standardUserDefaults] setBool:NO forKey:OSXRDPDesiredRunningKey];
     StopRemoteConnectionServerService();
     self.starting = NO;
     [self captureAndPublish];

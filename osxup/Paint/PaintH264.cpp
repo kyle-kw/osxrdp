@@ -127,50 +127,54 @@ bool PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     xstream_resetPos(_drawCmd);
     
     // header
-    xstream_writeInt16(_drawCmd, 0x1);       // cmdId
-    xstream_writeInt16(_drawCmd, 0);         // flags
-    xstream_writeInt32(_drawCmd, 0);         // len
+    if (xstream_writeInt16(_drawCmd, 0x1) != 0 ||
+        xstream_writeInt16(_drawCmd, 0) != 0 ||
+        xstream_writeInt32(_drawCmd, 0) != 0) {
+        return false;
+    }
     
     // body
-    xstream_writeInt16(_drawCmd, displayId); // surface_id;
-    xstream_writeInt16(_drawCmd, 0x000B);    // codec_id;
-    xstream_writeInt8(_drawCmd, 0x20);       // pixel_format (BGRA)
-    xstream_writeInt32(_drawCmd, (displayId & 0xF) << 28); // flags
-    
-    char* rects_start_ptr = (char*)_drawCmd->data_current;
+    if (xstream_writeInt16(_drawCmd, displayId) != 0 ||
+        xstream_writeInt16(_drawCmd, 0x000B) != 0 ||
+        xstream_writeInt8(_drawCmd, 0x20) != 0 ||
+        xstream_writeInt32(_drawCmd, (displayId & 0xF) << 28) != 0) {
+        return false;
+    }
+
+    int rectsStart = xstream_getPosition(_drawCmd);
     
     // rects
     if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
-        xstream_writeInt16(_drawCmd, frameInfo->dirtyCount); // num_rects
+        if (xstream_writeInt16(_drawCmd, frameInfo->dirtyCount) != 0) return false;
         
         for (int i = 0; i < frameInfo->dirtyCount; i++) {
-            xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].x);
-            xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].y);
-            xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].width);
-            xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].height);
+            if (xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].x) != 0 ||
+                xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].y) != 0 ||
+                xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].width) != 0 ||
+                xstream_writeInt16(_drawCmd, frameInfo->dirtys[i].height) != 0) return false;
         }
     }
     else {
-        xstream_writeInt16(_drawCmd, 1); // num_rects
-
-        xstream_writeInt32(_drawCmd, 0);
-        xstream_writeInt16(_drawCmd, width);
-        xstream_writeInt16(_drawCmd, height);
+        if (xstream_writeInt16(_drawCmd, 1) != 0 ||
+            xstream_writeInt32(_drawCmd, 0) != 0 ||
+            xstream_writeInt16(_drawCmd, width) != 0 ||
+            xstream_writeInt16(_drawCmd, height) != 0) return false;
     }
     
     // Copy once more (as-is)
-    int rects_data_len = (int)((char*)_drawCmd->data_current - rects_start_ptr);
-    xstream_writeData(_drawCmd, rects_start_ptr, rects_data_len);
-    
-    xstream_writeInt32(_drawCmd, 0);
-    xstream_writeInt16(_drawCmd, width);
-    xstream_writeInt16(_drawCmd, height);
-    
-    int dataLen = (int)((char*)_drawCmd->data_current - (char*)_drawCmd->data_start);
-    
-    *(int*)((char*)_drawCmd->data_start + sizeof(int)) = dataLen;
+    int rectsDataLen = xstream_getPosition(_drawCmd) - rectsStart;
+    int rawLen = 0;
+    const char* raw = (const char*)xstream_get_raw_buffer(_drawCmd, &rawLen);
+    if (rectsStart < 0 || rectsDataLen <= 0 || raw == NULL ||
+        xstream_writeData(_drawCmd, (void*)(raw + rectsStart), rectsDataLen) != 0 ||
+        xstream_writeInt32(_drawCmd, 0) != 0 ||
+        xstream_writeInt16(_drawCmd, width) != 0 ||
+        xstream_writeInt16(_drawCmd, height) != 0) return false;
 
-    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, imgData, (int)imgDataSize);
+    int dataLen = xstream_getPosition(_drawCmd);
+    if (xstream_patchInt32(_drawCmd, sizeof(int), dataLen) != 0) return false;
+    raw = (const char*)xstream_get_raw_buffer(_drawCmd, &rawLen);
+    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)raw, dataLen, imgData, (int)imgDataSize);
 
     XRDP_EGFX_END_FRAME endCmd;
     endCmd.header.cmdId = 12;

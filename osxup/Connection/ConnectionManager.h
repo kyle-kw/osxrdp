@@ -8,6 +8,7 @@
 #include "../Command/Command.h"
 
 #include <pthread.h>
+#include <sys/types.h>
 
 struct mod;
 
@@ -66,6 +67,7 @@ private:
     xipc_t* _sessionIpc;
     xipc_t* _agentIpc;
     int _sessionId;
+    uid_t _targetUid;
     const mod* _mod;
     
     // Adaptive timeout: last frame activity timestamp (ms, monotonic)

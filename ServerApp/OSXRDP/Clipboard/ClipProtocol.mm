@@ -82,3 +82,18 @@ int ClipProtocol_GetRequestedFormatPriority(int clipType, int formatId) {
             return 0;
     }
 }
+
+bool ClipProtocol_ValidateFileChunk(int expectedStreamId,
+                                    int actualStreamId,
+                                    int requestedLength,
+                                    uint64_t offset,
+                                    uint64_t fileSize,
+                                    int dataLen) {
+    if (expectedStreamId <= 0 || actualStreamId != expectedStreamId ||
+        requestedLength <= 0 || dataLen <= 0 || dataLen > requestedLength ||
+        offset > fileSize) {
+        return false;
+    }
+
+    return (uint64_t)dataLen <= fileSize - offset;
+}

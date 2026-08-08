@@ -1,6 +1,6 @@
 # osxrdp - xrdp for macOS
 
-- **Version:** 3.0.0
+- **Version:** 3.1.0
 - **Author:** kyle
 - **GitHub:** [github.com/kyle-kw/osxrdp](https://github.com/kyle-kw/osxrdp)
 

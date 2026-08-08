@@ -6,6 +6,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EN="$ROOT/ServerApp/OSXRDP/en.lproj/Localizable.strings"
 
 fail=0
+if ! command -v rg >/dev/null 2>&1; then
+  echo "FAIL test_strings requires ripgrep (rg)"
+  exit 1
+fi
 keys=(
   "main.state.permissions.title"
   "main.state.ready.title"

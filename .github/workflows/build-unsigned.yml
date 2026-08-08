@@ -32,13 +32,44 @@ jobs:
           clang --version
 
       - name: Unit tests
+        env:
+          RUN_TSAN: "1"
         run: bash tests/run_unit_tests.sh
+
+      - name: Validate shell scripts
+        run: bash -n package/*.sh package/scripts/*.sh tests/*.sh
+
+      - name: Clang analyzer (Release)
+        run: |
+          analysis_root="$(mktemp -d)"
+          trap 'rm -rf "$analysis_root"' EXIT
+          common=(-configuration Release -destination 'generic/platform=macOS' ARCHS=arm64 ONLY_ACTIVE_ARCH=NO SYMROOT="$analysis_root/Build/Products" CODE_SIGNING_ALLOWED=NO)
+          xcodebuild -project ScreenMirrorLib/ScreenMirrorLib.xcodeproj -scheme ScreenMirrorLib -derivedDataPath "$analysis_root/DerivedData/ScreenMirrorLib" OBJROOT="$analysis_root/Intermediates/ScreenMirrorLib" "${common[@]}" analyze
+          xcodebuild -project osxrdp_sessionmanager/osxrdp_sessionmanager.xcodeproj -scheme osxrdp_sessionmanager -derivedDataPath "$analysis_root/DerivedData/sessionmanager" OBJROOT="$analysis_root/Intermediates/sessionmanager" "${common[@]}" analyze
+          xcodebuild -project osxup/osxup.xcodeproj -scheme osxup -derivedDataPath "$analysis_root/DerivedData/osxup" OBJROOT="$analysis_root/Intermediates/osxup" "${common[@]}" analyze
+          xcodebuild -project ServerApp/OSXRDP.xcodeproj -scheme OSXRDP -derivedDataPath "$analysis_root/DerivedData/OSXRDP" OBJROOT="$analysis_root/Intermediates/OSXRDP" "${common[@]}" analyze
+          xcodebuild -project OSXRDPUninstaller/OSXRDPUninstaller.xcodeproj -scheme OSXRDPUninstaller -derivedDataPath "$analysis_root/DerivedData/Uninstaller" OBJROOT="$analysis_root/Intermediates/Uninstaller" "${common[@]}" analyze
 
       - name: Build unsigned package
         env:
-          VERSION: "3.0.0"
-          ARCHS: "arm64 x86_64"
+          VERSION: "3.1.0"
+          ARCHS: "arm64"
         run: bash package/build_unsigned.sh
+
+      - name: Verify package layout and signing identifiers
+        run: |
+          expanded="$(mktemp -d)"
+          pkgutil --expand-full package/osxrdp_installer_v*_unsigned.pkg "$expanded/pkg"
+          app="$expanded/pkg/osxrdp_component.pkg/Payload/Applications/osxrdp/OSXRDP.app"
+          test -d "$app"
+          test "$(codesign -dv "$app/Contents/MacOS/xrdp" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')" = xrdp
+          test "$(codesign -dv "$app/Contents/MacOS/osxrdp_sessionmanager" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')" = com.byungho.osxrdp.sessionmanager
+          test "$(codesign -dv "$app/Contents/MacOS/OSXRDP" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')" = com.byungho.osxrdp.mainapp
+          test "$(lipo -archs "$app/Contents/MacOS/OSXRDP")" = arm64
+          test "$(lipo -archs "$app/Contents/MacOS/xrdp")" = arm64
+          test "$(lipo -archs "$app/Contents/MacOS/xrdp-keygen")" = arm64
+          test "$(lipo -archs "$app/Contents/MacOS/osxrdp_sessionmanager")" = arm64
+          test "$(lipo -archs "$expanded/pkg/osxrdp_component.pkg/Payload/usr/local/lib/xrdp/libosxup.dylib")" = arm64
 
       - name: Upload installer package
         uses: actions/upload-artifact@v4
@@ -47,14 +78,3 @@ jobs:
           path: package/osxrdp_installer_v*_unsigned.pkg
           if-no-files-found: error
           retention-days: 14
-
-      - name: Upload built apps (debug convenience)
-        uses: actions/upload-artifact@v4
-        with:
-          name: osxrdp-apps-unsigned
-          path: |
-            package/source/OSXRDP.app
-            package/source/OSXRDPUninstaller.app
-            package/source/module/libosxup.dylib
-          if-no-files-found: error
-          retention-days: 7

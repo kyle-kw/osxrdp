@@ -138,6 +138,7 @@ ScreenRecorderManager::ScreenRecorderManager(bool useLegacyRecorder) :
     _rfxFullRedrawRequired(true),
     _rfxConvertQueue(NULL)
 {
+    memset(&_recordParams, 0x00, sizeof(_recordParams));
     memset(_recorder, 0x00, sizeof(_recorder));
     memset(_recordShm, 0x00, sizeof(_recordShm));
     ResetPendingDirty();
@@ -148,6 +149,9 @@ ScreenRecorderManager::~ScreenRecorderManager() {
     Stop();
 
     ReleaseRFXCanonical();
+    // Under ARC, dispatch_queue_t fields are strong Objective-C objects and are
+    // released when this C++ object is destroyed; dispatch_release is invalid.
+    _rfxConvertQueue = NULL;
 }
 
 bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
@@ -274,21 +278,23 @@ bool ScreenRecorderManager::HandleScreenResize(xipc_t* client, xstream_t* cmd) {
     Stop();
 
     // Rebuild at new resolution
+    _client.store(client, std::memory_order_release);
     if (StartRecordWithParams() == false) {
         NSLog(@"[ScreenRecorderManager::HandleScreenResize] failed to start record at new resolution, rolling back");
         // Restore old params and try to restart at previous resolution
         memcpy(&_recordParams, &oldParams, sizeof(RecordStartParams));
+        _client.store(client, std::memory_order_release);
         if (StartRecordWithParams() == false) {
             // Rollback also failed - recording is stopped, must terminate session
             NSLog(@"[ScreenRecorderManager::HandleScreenResize] rollback also failed, sending terminate");
-            _client = client;
+            _client.store(client, std::memory_order_release);
             SendDisconnectMsgToClient();
             return false;
         }
         // Rollback succeeded: SHM was destroyed and recreated under the same name.
         // Report re=1 with the restored dimensions so osxup reopens the new SHM
         // and client_monitor_resize settles on the size that is actually running.
-        _client = client;
+        _client.store(client, std::memory_order_release);
         for (int i = 0; i < _recordShmCnt; i++) {
             if (_recordShm[i] != NULL && _recordShm[i]->mem != NULL) {
                 screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[i]->mem;
@@ -308,7 +314,7 @@ bool ScreenRecorderManager::HandleScreenResize(xipc_t* client, xstream_t* cmd) {
     }
     InvalidateRFXCanonical();
 
-    _client = client;
+    _client.store(client, std::memory_order_release);
 
     return true;
 }
@@ -326,7 +332,7 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
     params->useVirtualMon = xstream_readInt32(cmd);
     params->monitorCount = xstream_readInt32(cmd);
 
-    if (params->monitorCount > 16) params->monitorCount = 1;
+    if (params->monitorCount > 16) params->monitorCount = 16;
     int requestedMonitorCount = params->monitorCount;
     RecordStartParams::MONITOR_INFO requestedMonitorInfo[16];
     memset(requestedMonitorInfo, 0x00, sizeof(requestedMonitorInfo));
@@ -691,6 +697,12 @@ void ScreenRecorderManager::Stop() {
 
     // Clear diagnostics so Settings UI does not show stale resolution/lag after stop
     [SessionMetrics.shared reset];
+    _client.store(NULL, std::memory_order_release);
+}
+
+void ScreenRecorderManager::DetachClient(xipc_t* client) {
+    xipc_t* expected = client;
+    _client.compare_exchange_strong(expected, NULL, std::memory_order_acq_rel);
 }
 
 void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
@@ -699,7 +711,7 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
     int packetType = xstream_readInt32(cmd);
     switch (packetType) {
         case OSXRDP_PACKETTYPE_REQ_SCREEN: {
-            _client = client;
+            _client.store(client, std::memory_order_release);
             bool re = StartRecord(cmd);
             
             NSLog(@"[ScreenRecorderManager::HandleCommand] start record. result %d", re);
@@ -717,7 +729,6 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
                 
                 xstream_free(result);
             }
-            
             break;
         }
         case OSXRDP_PACKETTYPE_REQ_SCREENOFF: {
@@ -775,8 +786,9 @@ void ScreenRecorderManager::SendDisconnectMsgToClient() {
     //_virtualMonitor.Destroy();
     
     struct stop_msg msg = { OSXRDP_CMDTYPE_MSGFROMAGENT, OSXRDP_PACKETTYPE_TERMINATE };
-    if (_client != NULL) {
-        xipc_send_data(_client, &msg, sizeof(msg));
+    xipc_t* client = _client.load(std::memory_order_acquire);
+    if (client != NULL) {
+        xipc_send_data(client, &msg, sizeof(msg));
     }
 }
 
@@ -840,7 +852,10 @@ void ScreenRecorderManager::SendNeedPaintMsg(int displayIdx) {
         displayIdx
     };
 
-    xipc_send_data(_client, (void*)&paintMsg.dummy, sizeof(paintMsg.dummy));
+    xipc_t* client = _client.load(std::memory_order_acquire);
+    if (client != NULL) {
+        xipc_send_data(client, (void*)&paintMsg.dummy, sizeof(paintMsg.dummy));
+    }
 }
 
 bool ScreenRecorderManager::CopyNV12PackedFrame(void* imageBufferRef, char* screenrecord_data, size_t slotCapacity, int* widthOut, int* heightOut) {
@@ -1013,7 +1028,11 @@ void ScreenRecorderManager::PopulateDirtyRectsFromSampleBuffer(void* sampleBuffe
     CGRect tmp;
     for (int i = 0; i < current_frame->dirtyCount; i++) {
         CFTypeRef element = CFArrayGetValueAtIndex(dirtyArr, i);
-        CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &tmp);
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID() ||
+            !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &tmp)) {
+            current_frame->dirtyCount = 0;
+            return;
+        }
         ProcessDirtyArea(&tmp, width, height, &(current_frame->dirtys[i]));
     }
 }

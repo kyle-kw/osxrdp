@@ -30,17 +30,27 @@ static inline int clamp_int(int v, int lo, int hi)
 }
 
 CursorHandler::CursorHandler() :
-    _connectionId(0),
     _cursorseed(0),
+    _tmpbuffer(NULL),
+    _connectionId(0),
+    _available(false),
     _lastCheckTime(0)
 {
-    CGSNewConnection(NULL, &_connectionId);
-    _tmpbuffer = (char*)malloc(128 * 128 * 4);
+    if (CGSNewConnection(NULL, &_connectionId) == 0 && _connectionId != 0) {
+        _tmpbuffer = (char*)malloc(128 * 128 * 4);
+        _available = _tmpbuffer != NULL;
+    }
+    if (!_available && _connectionId != 0) {
+        CGSReleaseConnection(_connectionId);
+        _connectionId = 0;
+    }
 }
 
 CursorHandler::~CursorHandler()
 {
-    CGSReleaseConnection(_connectionId);
+    if (_connectionId != 0) {
+        CGSReleaseConnection(_connectionId);
+    }
 
     if (_tmpbuffer) {
         free(_tmpbuffer);
@@ -50,6 +60,9 @@ CursorHandler::~CursorHandler()
 
 bool CursorHandler::HandleCursorInfo(cursor_data_t* cursor)
 {
+    if (!_available || cursor == NULL) {
+        return false;
+    }
     // Update cursor if changed from previous
     int seed = CGSCurrentCursorSeed();
     if (seed == _cursorseed) {

@@ -78,22 +78,28 @@ lib_mod_connect(struct mod *mod, int fd)
         return 1;
     }
     
+    // Reserve the single-connection slot before any session request is sent.
+    if (!_multipleConn.AddConnection(mod)) {
+        mod->server_msg(mod, "Another RDP connection is still shutting down. Please retry shortly.", 0);
+        return 1;
+    }
+
     // Initialize connection manager (connect to sessionmanager)
     if (mod->connectionManager->Initialize() != 0) {
+        _multipleConn.RemoveConnection(mod);
         mod->server_msg(mod, "Could not connect to sessionmanager.", 0);
 
         return 1;
     }
     
     if (mod->connectionManager->Connect(mod) == false) {
+        mod->connectionManager->Release();
+        _multipleConn.RemoveConnection(mod);
         mod->server_msg(mod, "No compatible graphics codec negotiated.", 0);
         mod->server_msg(mod, "Please use another client.", 0);
 
         return 1;
     }
-
-    // Multi-connection is not yet supported
-    _multipleConn.AddConnection(mod);
 
     return 0;
 }

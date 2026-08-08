@@ -8,6 +8,8 @@
 #import "UI/Main/MainWindowController.h"
 #import "UI/Settings/SettingsWindow.h"
 
+extern int g_Lockscreen;
+
 @interface AppDelegate ()
 {
     NSStatusItem *_statusItem;
@@ -32,12 +34,11 @@
     _sigSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(_sigSource, ^{
         NSLog(@"[OSXRDP] Received SIGTERM");
-        StopRemoteConnectionServerService();
-        exit(0);
+        [NSApp terminate:nil];
     });
+    // dispatch sources are Objective-C objects and are owned by ARC.
     dispatch_resume(_sigSource);
 
-    extern int g_Lockscreen;
     if (g_Lockscreen == 1) {
         sleep(2);
         StartRemoteConnectionServerService();
@@ -67,18 +68,25 @@
 
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [ConnectionStatusCoordinator.shared stopMonitoring];
+    if (g_Lockscreen != 1) {
+        [ConnectionStatusCoordinator.shared stopMonitoring];
+    }
     StopRemoteConnectionServerService();
     (void)notification;
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
-    [ConnectionStatusCoordinator.shared refreshNow];
+    if (g_Lockscreen != 1) {
+        [ConnectionStatusCoordinator.shared refreshNow];
+    }
     (void)notification;
 }
 
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)application
                     hasVisibleWindows:(BOOL)hasVisibleWindows {
+    if (g_Lockscreen == 1) {
+        return NO;
+    }
     [self onOpenDashboardMenuClicked];
     (void)application;
     (void)hasVisibleWindows;

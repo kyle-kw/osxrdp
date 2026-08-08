@@ -203,48 +203,51 @@ bool PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     xstream_resetPos(_drawCmd);
 
     // header
-    xstream_writeInt16(_drawCmd, XR_RDPGFX_CMDID_WIRETOSURFACE_2);  // cmdId
-    xstream_writeInt16(_drawCmd, 0);                                // flags
-    xstream_writeInt32(_drawCmd, 0);                                // len
+    if (xstream_writeInt16(_drawCmd, XR_RDPGFX_CMDID_WIRETOSURFACE_2) != 0 ||
+        xstream_writeInt16(_drawCmd, 0) != 0 ||
+        xstream_writeInt32(_drawCmd, 0) != 0) return false;
 
     // body
-    xstream_writeInt16(_drawCmd, displayId);                        // surface_id
-    xstream_writeInt16(_drawCmd, XR_RDPGFX_CODECID_CAPROGRESSIVE);  // codec_id
-    xstream_writeInt32(_drawCmd, 0);                                // codec_context_id
-    xstream_writeInt8(_drawCmd,  XR_PIXEL_FORMAT_XRGB_8888);        // pixel_format
-    xstream_writeInt32(_drawCmd, 0);                                // flags
+    if (xstream_writeInt16(_drawCmd, displayId) != 0 ||
+        xstream_writeInt16(_drawCmd, XR_RDPGFX_CODECID_CAPROGRESSIVE) != 0 ||
+        xstream_writeInt32(_drawCmd, 0) != 0 ||
+        xstream_writeInt8(_drawCmd, XR_PIXEL_FORMAT_XRGB_8888) != 0 ||
+        xstream_writeInt32(_drawCmd, 0) != 0) return false;
 
     // Set 64-aligned dirty areas for RFX progressive processing
     // Use slot indices from producer as-is - frameInfo->dirtys is not used in RFX path.
-    xstream_writeInt16(_drawCmd, slotTileCount); // num_rects_d
+    if (xstream_writeInt16(_drawCmd, slotTileCount) != 0) return false;
     for (int i = 0; i < slotTileCount; ++i) {
         const int tileIdx = slotIndices[i];
         if (tileIdx < 0 || tileIdx >= _tileTotal) {
             return false; // Corrupted slot
         }
         const TileRect* rect = &_tileRects[tileIdx];
-        xstream_writeInt16(_drawCmd, rect->left);
-        xstream_writeInt16(_drawCmd, rect->top);
-        xstream_writeInt16(_drawCmd, rect->width);
-        xstream_writeInt16(_drawCmd, rect->height);
+        if (xstream_writeInt16(_drawCmd, rect->left) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->top) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->width) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->height) != 0) return false;
     }
 
-    xstream_writeInt16(_drawCmd, slotTileCount); // num_rects_c
+    if (xstream_writeInt16(_drawCmd, slotTileCount) != 0) return false;
     for (int i = 0; i < slotTileCount; ++i) {
         const int tileIdx = slotIndices[i];
         const TileRect* rect = &_tileRects[tileIdx];
-        xstream_writeInt16(_drawCmd, rect->left);
-        xstream_writeInt16(_drawCmd, rect->top);
-        xstream_writeInt16(_drawCmd, rect->width);
-        xstream_writeInt16(_drawCmd, rect->height);
+        if (xstream_writeInt16(_drawCmd, rect->left) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->top) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->width) != 0 ||
+            xstream_writeInt16(_drawCmd, rect->height) != 0) return false;
     }
 
-    xstream_writeInt32(_drawCmd, 0);
-    xstream_writeInt16(_drawCmd, _width);
-    xstream_writeInt16(_drawCmd, _height);
+    if (xstream_writeInt32(_drawCmd, 0) != 0 ||
+        xstream_writeInt16(_drawCmd, _width) != 0 ||
+        xstream_writeInt16(_drawCmd, _height) != 0) return false;
 
-    int dataLen = (int)((char*)_drawCmd->data_current - (char*)_drawCmd->data_start);
-    *(int*)((char*)_drawCmd->data_start + sizeof(int)) = dataLen;
+    int dataLen = xstream_getPosition(_drawCmd);
+    if (xstream_patchInt32(_drawCmd, sizeof(int), dataLen) != 0) return false;
+    int rawLen = 0;
+    const char* raw = (const char*)xstream_get_raw_buffer(_drawCmd, &rawLen);
+    if (raw == NULL || rawLen != dataLen) return false;
 
     const size_t tileSize = 16384; // 64 x 64 x (Y + U + V + A)
 
@@ -265,7 +268,7 @@ bool PaintRFX::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, c
     if (mod->server_egfx_cmd((struct mod*)mod, (char*)&startCmd, sizeof(startCmd), NULL, 0) != 0) {
         return false;
     }
-    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)_drawCmd->data_start, dataLen, (char*)_tileData, (int)_tileDataSize);
+    int drawResult = mod->server_egfx_cmd((struct mod*)mod, (char*)raw, dataLen, (char*)_tileData, (int)_tileDataSize);
 
     XRDP_EGFX_END_FRAME endCmd;
     endCmd.header.cmdId = 12;

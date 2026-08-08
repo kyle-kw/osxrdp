@@ -30,9 +30,7 @@ TEST_CASE(create_open_roundtrip_short_name) {
 
     xshm_t* owner = xshm_create(name, 128);
     if (owner == NULL) {
-        /* Some environments may block shm_open; name-bound tests above still ran. */
-        printf("    SKIP create/open roundtrip (xshm_create failed)\n");
-        return;
+        SKIP_TEST("create/open roundtrip (xshm_create failed)");
     }
 
     EXPECT_NOT_NULL(owner->mem);

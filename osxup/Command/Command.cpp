@@ -16,8 +16,11 @@ void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int re
         return;
     }
     
-    if (monitorCount > 16) {
-        monitorCount = 1;
+    if (monitorCount < 0 || monitorInfo == NULL) {
+        monitorCount = 0;
+    }
+    else if (monitorCount > 16) {
+        monitorCount = 16;
     }
 
     xstream_writeInt32(stream, OSXRDP_CMDTYPE_SCREEN);
@@ -81,7 +84,10 @@ bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int r
     }
 
     // Cap at 16 to match ConnectionManager::SendResolutionChange (do not collapse to 1)
-    if (monitorCount > 16) {
+    if (monitorCount < 0 || monitorInfo == NULL) {
+        monitorCount = 0;
+    }
+    else if (monitorCount > 16) {
         monitorCount = 16;
     }
 
@@ -102,7 +108,7 @@ bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int r
     xstream_writeInt32(stream, recordFormat);
     xstream_writeInt32(stream, useVirtualmon);
 
-    if (monitorCount == 0 || monitorInfo == NULL) {
+    if (monitorCount == 0) {
         xstream_writeInt32(stream, 1);
         xstream_writeInt32(stream, 0);
         xstream_writeInt32(stream, 0);

@@ -9,12 +9,24 @@
 #include "utils.h"
 #include "duprun.h"
 #include <sys/stat.h>
+#include <signal.h>
+#include <pthread.h>
 
 #import "sessionmanager/sessionmanagerserver.h"
 
 #define _LOG_CONFIG_PATH "/etc/osxrdp/log_sessionmanager.conf"
 
 int main(int argc, const char * argv[]) {
+    (void)argc;
+    (void)argv;
+
+    sigset_t shutdownSignals;
+    sigemptyset(&shutdownSignals);
+    sigaddset(&shutdownSignals, SIGTERM);
+    sigaddset(&shutdownSignals, SIGINT);
+    if (pthread_sigmask(SIG_BLOCK, &shutdownSignals, NULL) != 0) {
+        return EXIT_FAILURE;
+    }
     
     // All files under /Library/Logs disappear on OS update.... what?
     mkdir("/Library/Logs/osxrdp", 0755);
@@ -30,7 +42,10 @@ int main(int argc, const char * argv[]) {
         NSLog(@"[osxrdp_sessionmanager] osxrdp sessionmanager must run as root.");
         dzlog_error("[osxrdp_sessionmanager] osxrdp sessionmanager must run as root.");
         
-        return 1;
+        if (re == 0) {
+            zlog_fini();
+        }
+        return EXIT_FAILURE;
     }
     
     // Check for duplicate execution
@@ -39,7 +54,10 @@ int main(int argc, const char * argv[]) {
         NSLog(@"[osxrdp_sessionmanager] program already running.");
         dzlog_error("[osxrdp_sessionmanager] program already running.");
         
-        return 1;
+        if (re == 0) {
+            zlog_fini();
+        }
+        return EXIT_FAILURE;
     }
     
     dzlog_info("[osxrdp_sessionmanager] --- osxrdp sessionmanager started! ---");
@@ -47,9 +65,20 @@ int main(int argc, const char * argv[]) {
     
     SessionManagerServer server;
     
-    server.Start();
-    
-    pause();
+    if (!server.Start()) {
+        duprun_release(dup);
+        if (re == 0) {
+            zlog_fini();
+        }
+        return EXIT_FAILURE;
+    }
+
+    int receivedSignal = 0;
+    int exitStatus = EXIT_SUCCESS;
+    if (sigwait(&shutdownSignals, &receivedSignal) != 0) {
+        dzlog_error("[osxrdp_sessionmanager] sigwait failed");
+        exitStatus = EXIT_FAILURE;
+    }
     
     server.Stop();
     
@@ -57,6 +86,9 @@ int main(int argc, const char * argv[]) {
     dup = NULL;
     
     dzlog_info("[osxrdp_sessionmanager] --- osxrdp sessionmanager ended ---");
+    if (re == 0) {
+        zlog_fini();
+    }
     
-    return EXIT_SUCCESS;
+    return exitStatus;
 }

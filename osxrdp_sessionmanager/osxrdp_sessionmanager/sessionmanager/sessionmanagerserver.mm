@@ -1,19 +1,44 @@
 #include "../pch.h"
-#include "SessionManagerServer.h"
+#include "sessionmanagerserver.h"
 #import <Foundation/Foundation.h>
 
 #include "xstream.h"
 #include "osxrdp/packet.h"
+#include "osxrdp/session_protocol.h"
 #include "utils.h"
 #include "sessionmanager.h"
+#include <time.h>
 
 static const char* kTrustedClientTeamId = "33X7M69J4B";
 static const char* kTrustedClientSigningIdentifier = "xrdp";
+static const char* kTrustedClientAdhocPath = "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/xrdp";
+
+static uint64_t MonotonicMilliseconds() {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000 + (uint64_t)now.tv_nsec / 1000000;
+}
+
+static void SendSessionReply(xipc_t* client, const session_info_t* sessionInfo) {
+    xstream_t* result = xstream_create(12);
+    if (result == NULL) {
+        return;
+    }
+    xstream_writeInt32(result, OSXRDP_SESSMAN_REPLY_SESSION);
+    xstream_writeInt32(result, sessionInfo->sessionId);
+    xstream_writeInt32(result, sessionInfo->isLogined);
+    int rawBufferLen = 0;
+    const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
+    xipc_send_data(client, rawBuffer, rawBufferLen);
+    xstream_free(result);
+}
 
 SessionManagerServer::SessionManagerServer()
 : _cmdPipe(NULL)
 , _ioThreadStarted(0)
-, _state(State_Idle) {
+, _state(State_Idle)
+, _pendingLoginWindowSessionId(-1)
+, _pendingLoginWindowCreatedMs(0) {
     pthread_mutex_init(&_stateLock, NULL);
 }
 
@@ -22,10 +47,10 @@ SessionManagerServer::~SessionManagerServer() {
     pthread_mutex_destroy(&_stateLock);
 }
 
-void SessionManagerServer::Start() {
+bool SessionManagerServer::Start() {
     // Ignore if server is starting or running
     if (IsState(State_Running) || IsState(State_Starting)) {
-        return;
+        return IsState(State_Running);
     }
     
     // Set to starting
@@ -34,18 +59,19 @@ void SessionManagerServer::Start() {
     // Create IPC server
     if (CreateCommandPipeServer() == false) {
         SetState(State_Idle);
-        return;
+        return false;
     }
 
     // Start IO thread
     if (StartIoThread() == false) {
         DestroyCommandPipeServer();
         SetState(State_Idle);
-        return;
+        return false;
     }
     
     // Change state to Running
     SetState(State_Running);
+    return true;
 }
 
 void SessionManagerServer::Stop() {
@@ -90,7 +116,10 @@ bool SessionManagerServer::CreateCommandPipeServer() {
         return false;
     }
     
-    if (xipc_create_server(cmdPipe, "/tmp/osxrdpsessionmanager", NULL, NULL, OnClientAuthorize, OnClientRejected) != 0) {
+    char socketPath[128] = {0};
+    if (xipc_prepare_private_directory("/var/run/osxrdp", 0, 0) != 0 ||
+        osxrdp_get_sessionmanager_socket_path(socketPath, sizeof(socketPath)) == 0 ||
+        xipc_create_server(cmdPipe, socketPath, NULL, NULL, OnClientAuthorize, OnClientRejected) != 0) {
         xipc_destroy(cmdPipe);
         dzlog_error("[SessionManagerServer]::CreateCommandPipeServer xipc_create_server failed.");
         return false;
@@ -184,43 +213,55 @@ int SessionManagerServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* dat
         return 0;
     }
     
+    if (xstream_getRemaining(cmd) < (int)sizeof(int)) {
+        xstream_free(cmd);
+        return 0;
+    }
     int cmdType = xstream_readInt32(cmd);
     switch (cmdType) {
         case OSXRDP_SESSMAN_REQUEST_SESSION: {
             session_info_t sessionInfo = {0,};
             
-            const char* username = xstream_readStr(cmd, NULL);
-            if (osxrdp_sessionmanager_getsessioninfo(username, &sessionInfo) != 0) {
-                // No session for the connecting user
-                // Create session and send info to osxup
-                if (osxrdp_sessionmanager_createsession(&sessionInfo) != 0) {
-                    // Failed to create session
+            sessionInfo.sessionId = -1;
+            int usernameLen = 0;
+            const char* username = NULL;
+            if (osxrdp_parse_session_request(cmd, &username, &usernameLen) != 0 ||
+                osxrdp_sessionmanager_validate_user(username, usernameLen) != 0) {
+                dzlog_error("[SessionManagerServer] rejected invalid session request");
+                SendSessionReply(client, &sessionInfo);
+                break;
+            }
+
+            int lookupResult = osxrdp_sessionmanager_getsessioninfo(username, &sessionInfo);
+            if (lookupResult == 1) {
+                uint64_t now = MonotonicMilliseconds();
+                if (osxrdp_pending_session_is_reusable(_this->_pendingLoginWindowSessionId,
+                                                       _this->_pendingLoginWindowCreatedMs, now)) {
+                    sessionInfo.sessionId = _this->_pendingLoginWindowSessionId;
+                    sessionInfo.isLogined = 0;
+                }
+                else if (osxrdp_sessionmanager_createsession(&sessionInfo) == 0) {
+                    _this->_pendingLoginWindowSessionId = sessionInfo.sessionId;
+                    _this->_pendingLoginWindowCreatedMs = now;
+                }
+                else {
                     sessionInfo.sessionId = -1;
                 }
             }
-            
-            // Send info back to osxup
-            xstream* result = xstream_create(32);
-            if (result != NULL) {
-                xstream_writeInt32(result, OSXRDP_SESSMAN_REPLY_SESSION);
-                xstream_writeInt32(result, sessionInfo.sessionId);
-                xstream_writeInt32(result, sessionInfo.isLogined);
-                
-                int rawBufferLen = 0;
-                const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
-                
-                xipc_send_data(client, rawBuffer, rawBufferLen);
-                
-                xstream_free(result);
+            else if (lookupResult != 0) {
+                sessionInfo.sessionId = -1;
             }
+            else {
+                _this->_pendingLoginWindowSessionId = -1;
+                _this->_pendingLoginWindowCreatedMs = 0;
+            }
+
+            SendSessionReply(client, &sessionInfo);
             
             break;
         }
         case OSXRDP_SESSMAN_REQUEST_RELEASESESSION: {
-            int sessionId = xstream_readInt32(cmd);
-            
-            osxrdp_sessionmanager_releasesession(sessionId);
-            
+            dzlog_error("[SessionManagerServer] release-session command is disabled");
             break;
         }
         default:
@@ -233,13 +274,12 @@ int SessionManagerServer::OnMessageReceived(xipc_t* t, xipc_t* client, void* dat
 
 int SessionManagerServer::OnClientAuthorize(xipc_t* t, xipc_t* client) {
     (void)t;
-#if DEBUG
-    return 0;
-#else
-    // Accept official Team ID, same-team local Developer signing, or ad-hoc
-    // xrdp installed under /Applications/osxrdp (see xipc_is_trusted_xrdp_client).
-    return xipc_is_trusted_xrdp_client(client, kTrustedClientTeamId, kTrustedClientSigningIdentifier);
-#endif
+    uid_t peerUid = (uid_t)-1;
+    if (xipc_get_peer_euid(client, &peerUid) != 0 || peerUid != 0) {
+        return -1;
+    }
+    return xipc_is_trusted_peer(client, kTrustedClientTeamId,
+                                kTrustedClientSigningIdentifier, kTrustedClientAdhocPath);
 }
 
 int SessionManagerServer::OnClientRejected(xipc_t* t, xipc_t* client) {

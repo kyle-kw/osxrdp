@@ -32,6 +32,14 @@ uint64_t ClipProtocol_ReadUInt64FromLowHigh(uint32_t low, uint32_t high);
 // clipType: CLIP_PROTOCOL_TYPE_*; formatId: CLIP_PROTOCOL_CF_UNICODETEXT, etc.
 int ClipProtocol_GetRequestedFormatPriority(int clipType, int formatId);
 
+// Validate a range response without overflowing offset + dataLen.
+bool ClipProtocol_ValidateFileChunk(int expectedStreamId,
+                                    int actualStreamId,
+                                    int requestedLength,
+                                    uint64_t offset,
+                                    uint64_t fileSize,
+                                    int dataLen);
+
 #ifdef __cplusplus
 }
 #endif

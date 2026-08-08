@@ -7,6 +7,7 @@
 
 static int g_test_failures = 0;
 static int g_test_count = 0;
+static int g_test_skips = 0;
 
 #define TEST_CASE(name) \
     static void name(void); \
@@ -53,8 +54,23 @@ static int g_test_count = 0;
 
 #define RUN_TEST(fn) fn##_run()
 
+#define SKIP_TEST(reason) \
+    do { \
+        g_test_skips++; \
+        printf("    SKIP %s\n", (reason)); \
+        return; \
+    } while (0)
+
 static int test_main_finish(const char* suite) {
     if (g_test_failures == 0) {
+        if (g_test_skips > 0 && getenv("CI") != NULL) {
+            printf("FAIL %s (%d skipped tests are not allowed in CI)\n", suite, g_test_skips);
+            return 1;
+        }
+        if (g_test_skips > 0) {
+            printf("OK  %s (%d tests; passed with %d skips)\n", suite, g_test_count, g_test_skips);
+            return 0;
+        }
         printf("OK  %s (%d tests)\n", suite, g_test_count);
         return 0;
     }

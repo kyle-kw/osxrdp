@@ -5,10 +5,14 @@
 #include "utils.h"
 #include <time.h>
 #include <unistd.h>
+#include <pwd.h>
 
 // Session manager server name
-static const char* OSXRDP_SESSIONMANAGER_NAME = "/tmp/osxrdpsessionmanager";
-static const char* OSXRDP_AGENT_NAME = "/tmp/osxrdp";
+static const char* kTrustedTeamId = "33X7M69J4B";
+static const char* kSessionManagerIdentifier = "com.byungho.osxrdp.sessionmanager";
+static const char* kSessionManagerAdhocPath = "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/osxrdp_sessionmanager";
+static const char* kAgentIdentifier = "com.byungho.osxrdp.mainapp";
+static const char* kAgentAdhocPath = "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/OSXRDP";
 
 static const int OSXRDP_RECONNECT_WAITCNT = 30;
 // If REP_SCREENRESIZE never arrives, complete the xrdp handshake and free the flag.
@@ -36,6 +40,7 @@ ConnectionManager::ConnectionManager() :
     _sessionIpc(NULL),
     _agentIpc(NULL),
     _sessionId(0),
+    _targetUid((uid_t)-1),
     _mod(NULL),
     _lastFrameActivityMs(0),
     _pendingResizeWidth(0),
@@ -83,6 +88,15 @@ bool ConnectionManager::Connect(const mod* mod) {
         // log
         return false;
     }
+
+    struct passwd passwordEntry;
+    struct passwd* passwordResult = NULL;
+    char passwordBuffer[4096];
+    if (getpwnam_r(mod->username, &passwordEntry, passwordBuffer, sizeof(passwordBuffer), &passwordResult) != 0 ||
+        passwordResult == NULL) {
+        return false;
+    }
+    _targetUid = passwordEntry.pw_uid;
     
     _mod = mod;
     _channelManager.Initialize(mod);
@@ -160,7 +174,7 @@ void ConnectionManager::KeepAlive() {
         xipc_loop_once(_agentIpc);
 
         // If connection is lost
-        if (_agentIpc->closed == 1) {
+        if (xipc_is_closed(_agentIpc)) {
             // Destroy
             xipc_destroy(_agentIpc);
             _agentIpc = NULL;
@@ -174,7 +188,7 @@ void ConnectionManager::KeepAlive() {
         // Process queued messages
         xipc_loop_once(_sessionIpc);
         
-        if (_sessionIpc->closed == 1) {
+        if (xipc_is_closed(_sessionIpc)) {
             // Destroy
             xipc_destroy(_sessionIpc);
             _sessionIpc = NULL;
@@ -267,6 +281,13 @@ void ConnectionManager::_RecordFrameActivity() {
 bool ConnectionManager::SendResolutionChange(int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo) {
     // Reject concurrent resize while one is already in flight
     if (_resizeInProgress || _agentIpc == NULL) {
+        return false;
+    }
+    if (_mod == NULL || _mod->client_monitor_resize == NULL || _mod->server_monitor_resize_done == NULL) {
+        if (_mod != NULL && _mod->server_msg != NULL) {
+            _mod->server_msg((struct mod*)_mod, "Screen resize is unavailable: required xrdp callbacks are missing.", 0);
+        }
+        _ClearResizeState();
         return false;
     }
 
@@ -362,7 +383,11 @@ bool ConnectionManager::_ConnectToSessionManager() {
         return false;
     }
     
-    if (xipc_connect_server(ipc, OSXRDP_SESSIONMANAGER_NAME) != 0) {
+    char socketPath[128] = {0};
+    if (osxrdp_get_sessionmanager_socket_path(socketPath, sizeof(socketPath)) == 0 ||
+        xipc_connect_server_verified(ipc, socketPath, 0, 0) != 0 ||
+        xipc_is_trusted_peer(ipc, kTrustedTeamId, kSessionManagerIdentifier,
+                             kSessionManagerAdhocPath) != 0) {
         xipc_destroy(ipc);
         
         return false;
@@ -396,7 +421,9 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     
     // Find agent address matching state
     char server_name[512] = {0,};
-    if (get_object_name(sessionId, OSXRDP_AGENT_NAME, server_name, sizeof(server_name), isLockScreen) == 0) {
+    uid_t agentUid = isLockScreen ? 0 : _targetUid;
+    if (agentUid == (uid_t)-1 ||
+        osxrdp_get_agent_socket_path(agentUid, sessionId, server_name, sizeof(server_name), isLockScreen) == 0) {
         // log
         xipc_destroy(ipc);
         return false;
@@ -406,9 +433,13 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     // Agent may start late, so retry multiple times (with timeout)
     bool connected = false;
     for (int i = 0; i < OSXRDP_RECONNECT_WAITCNT; i++) {
-        if (xipc_connect_server(ipc, server_name) == 0) {
-            connected = true;
-            break;
+        if (xipc_connect_server_verified(ipc, server_name, agentUid, (gid_t)-1) == 0) {
+            if (xipc_is_trusted_peer(ipc, kTrustedTeamId, kAgentIdentifier, kAgentAdhocPath) == 0) {
+                connected = true;
+                break;
+            }
+            xipc_destroy(ipc);
+            return false;
         }
         
         // If a terminate request arrived during connection attempts (possible?)
@@ -568,6 +599,16 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
 
                 // Complete the async resize handshake with xrdp
                 if (_this->_resizeInProgress) {
+                    if (_this->_mod == NULL ||
+                        _this->_mod->client_monitor_resize == NULL ||
+                        _this->_mod->server_monitor_resize_done == NULL) {
+                        if (_this->_mod != NULL && _this->_mod->server_msg != NULL) {
+                            _this->_mod->server_msg((struct mod*)_this->_mod,
+                                "Screen resize failed: required xrdp callbacks are missing.", 0);
+                        }
+                        _this->_ClearResizeState();
+                        break;
+                    }
                     if (re == 1) {
                         // Prefer agent-reported even-aligned size for the client layout.
                         int layoutW = (newWidth > 0) ? newWidth : _this->_pendingResizeWidth;
@@ -596,7 +637,7 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
                             monCount, _this->_pendingResizeMonitors);
                     }
                     _this->_mod->server_monitor_resize_done((struct mod*)_this->_mod);
-                    _this->_resizeInProgress = false;
+                    _this->_ClearResizeState();
                 }
             }
             break;

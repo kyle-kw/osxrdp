@@ -290,7 +290,10 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     
     for (int i = 0; i < dirtyAreaCnt; i++) {
         CFTypeRef element = CFArrayGetValueAtIndex(dirtyArr, i);
-        CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &(rects[i]));
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID() ||
+            !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &(rects[i]))) {
+            return 0;
+        }
     }
     
     return dirtyAreaCnt;

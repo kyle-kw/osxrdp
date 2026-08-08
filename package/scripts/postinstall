@@ -1,69 +1,50 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 APP_MACOS="/Applications/osxrdp/OSXRDP.app/Contents/MacOS"
-APP_BUNDLE="/Applications/osxrdp/OSXRDP.app"
+XRDP_CONFIG_DIR="/etc/xrdp"
+RUNTIME_DIR="/var/run/osxrdp"
+TEMP_DIR="$(mktemp -d /private/tmp/osxrdp-postinstall.XXXXXX)"
+trap 'status=$?; rm -rf "$TEMP_DIR"; exit "$status"' EXIT
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=install_helpers.sh
+source "$SCRIPT_DIR/install_helpers.sh"
 
-# generate key (classic rdp)
-"$APP_MACOS/xrdp-keygen" xrdp auto
+mkdir -p "$XRDP_CONFIG_DIR"
 
-# generate tls key
-/usr/bin/openssl req -x509 -newkey rsa:2048 -nodes \
-    -keyout /etc/xrdp/key.pem \
-    -out  /etc/xrdp/cert.pem \
-    -days 3650 -subj "/CN=osxrdp"
-chmod 600 /etc/xrdp/key.pem
-chmod 644 /etc/xrdp/cert.pem
+# Preserve all service identities across ordinary upgrades.
+osxrdp_ensure_rdp_identity "$APP_MACOS" "$XRDP_CONFIG_DIR" "$TEMP_DIR"
+osxrdp_ensure_tls_identity "$XRDP_CONFIG_DIR" "$TEMP_DIR"
 
-# create log file (xrdp)
 touch /var/log/xrdp.log
-
-# create log folder (osxrdp)
 mkdir -p /Library/Logs/osxrdp
 chmod 755 /Library/Logs/osxrdp
 
-# Drop stale IPC sockets from a previous install (otherwise clients connect to a dead node).
-rm -f /tmp/osxrdpsessionmanager
+# Create the root-only sessionmanager socket directory and reject symlinks.
+if [[ -L "$RUNTIME_DIR" ]]; then
+    echo "ERROR: $RUNTIME_DIR must not be a symbolic link." >&2
+    exit 1
+fi
+mkdir -p "$RUNTIME_DIR"
+chown root:wheel "$RUNTIME_DIR"
+chmod 700 "$RUNTIME_DIR"
+if [[ "$(stat -f '%u:%g:%Lp' "$RUNTIME_DIR")" != "0:0:700" ]]; then
+    echo "ERROR: invalid owner or mode on $RUNTIME_DIR" >&2
+    exit 1
+fi
 
-# From macOS 13+, launchd refuses to run quarantined plists, so remove quarantine attribute
+# Remove only the obsolete, fixed-name socket from pre-migration releases.
+if [[ -S /tmp/osxrdpsessionmanager ]]; then
+    rm -f /tmp/osxrdpsessionmanager
+fi
+
 xattr -dr com.apple.quarantine /Applications/osxrdp 2>/dev/null || true
 xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.plist 2>/dev/null || true
 xattr -d com.apple.quarantine /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist 2>/dev/null || true
 xattr -d com.apple.quarantine /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null || true
 
-# Ensure nested helpers keep distinct code-signing identifiers.
-# (A prior --deep re-sign of the .app can overwrite them with the GUI app id, which
-# triggers Launch Constraint Violation on the sessionmanager LaunchDaemon.)
-if [[ -x "$APP_MACOS/xrdp" ]]; then
-  codesign --force --sign - -i xrdp "$APP_MACOS/xrdp" || true
-fi
-if [[ -x "$APP_MACOS/xrdp-keygen" ]]; then
-  codesign --force --sign - -i xrdp-keygen "$APP_MACOS/xrdp-keygen" || true
-fi
-if [[ -x "$APP_MACOS/osxrdp_sessionmanager" ]]; then
-  codesign --force --sign - -i com.byungho.osxrdp.sessionmanager "$APP_MACOS/osxrdp_sessionmanager" || true
-fi
-if [[ -x "$APP_MACOS/OSXRDP" ]]; then
-  codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_MACOS/OSXRDP" || true
-fi
-# Seal bundle without --deep so nested identifiers stay intact.
-if [[ -d "$APP_BUNDLE" ]]; then
-  codesign --force --sign - -i com.byungho.osxrdp.mainapp "$APP_BUNDLE" || true
-fi
+osxrdp_restart_daemon "com.byungho.osxrdp" "/Library/LaunchDaemons/com.byungho.osxrdp.plist"
+osxrdp_restart_daemon "com.byungho.osxrdp.sessionmanager" "/Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist"
 
-# Tear down old jobs first so LWCR / BTM state is refreshed for new code signatures.
-launchctl bootout system/com.byungho.osxrdp 2>/dev/null || true
-launchctl bootout system/com.byungho.osxrdp.sessionmanager 2>/dev/null || true
-
-# start service
-launchctl bootstrap system /Library/LaunchDaemons/com.byungho.osxrdp.plist
-launchctl enable system/com.byungho.osxrdp
-launchctl kickstart -k system/com.byungho.osxrdp
-
-launchctl bootstrap system /Library/LaunchDaemons/com.byungho.osxrdp.sessionmanager.plist
-launchctl enable system/com.byungho.osxrdp.sessionmanager
-launchctl kickstart -k system/com.byungho.osxrdp.sessionmanager
-
-launchctl bootstrap gui/$(id -u) /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null \
-  || launchctl load /Library/LaunchAgents/com.byungho.osxrdp.lockscreen.plist 2>/dev/null \
-  || true
+# The LoginWindow-scoped LaunchAgent is loaded by launchd for the next matching
+# session. A package script runs as root and must not bootstrap it into gui/0.

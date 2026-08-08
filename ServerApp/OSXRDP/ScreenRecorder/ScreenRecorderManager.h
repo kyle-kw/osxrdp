@@ -9,6 +9,7 @@
 #include "CursorHandler.h"
 #include "../VirtualMon/VirtualMonitor.h"
 #include "osxrdp/screenrecordshm.h"
+#include <atomic>
 
 class ScreenRecorderManager {
     
@@ -18,6 +19,7 @@ public:
         
     void HandleCommand(xipc_t* client, xstream_t* cmd);
     void Stop();
+    void DetachClient(xipc_t* client);
     void SendDisconnectMsgToClient();
 
 private:
@@ -60,7 +62,7 @@ private:
     xshm_t* _cursorShm;
     
     // pipe to send commands to osxup
-    xipc_t* _client;
+    std::atomic<xipc_t*> _client;
     
     // Input handler (mouse, keyboard)
     InputHandler _inputHandler;

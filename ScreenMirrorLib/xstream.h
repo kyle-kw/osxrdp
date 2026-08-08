@@ -32,6 +32,8 @@ int xstream_readInt32(xstream_t* stream);
 const void* xstream_readData(xstream_t* stream, int dataSize);
 const char* xstream_readStr(xstream_t* stream, int* strLen);
 int xstream_getRemaining(xstream_t* stream);
+int xstream_getPosition(const xstream_t* stream);
+int xstream_patchInt32(xstream_t* stream, int offset, int data);
 
 #ifdef __cplusplus
 }

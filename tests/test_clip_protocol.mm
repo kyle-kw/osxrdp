@@ -109,6 +109,16 @@ TEST_CASE(test_format_priority_none) {
     EXPECT_EQ_INT(ClipProtocol_GetRequestedFormatPriority(CLIP_PROTOCOL_TYPE_FILELIST, 0), 0);
 }
 
+TEST_CASE(test_file_chunk_validation) {
+    EXPECT_TRUE(ClipProtocol_ValidateFileChunk(7, 7, 64, 0, 64, 64));
+    EXPECT_TRUE(ClipProtocol_ValidateFileChunk(7, 7, 64, 32, 64, 32));
+    EXPECT_TRUE(!ClipProtocol_ValidateFileChunk(7, 8, 64, 0, 64, 16));
+    EXPECT_TRUE(!ClipProtocol_ValidateFileChunk(7, 7, 64, 0, 64, 0));
+    EXPECT_TRUE(!ClipProtocol_ValidateFileChunk(7, 7, 32, 0, 64, 33));
+    EXPECT_TRUE(!ClipProtocol_ValidateFileChunk(7, 7, 64, 63, 64, 2));
+    EXPECT_TRUE(!ClipProtocol_ValidateFileChunk(7, 7, 64, UINT64_MAX, UINT64_MAX, 1));
+}
+
 int main(void) {
     RUN_TEST(test_safe_path_accepts_simple);
     RUN_TEST(test_safe_path_rejects_absolute);
@@ -128,5 +138,6 @@ int main(void) {
     RUN_TEST(test_format_priority_text_unicode);
     RUN_TEST(test_format_priority_text_other);
     RUN_TEST(test_format_priority_none);
+    RUN_TEST(test_file_chunk_validation);
     return test_main_finish("test_clip_protocol");
 }

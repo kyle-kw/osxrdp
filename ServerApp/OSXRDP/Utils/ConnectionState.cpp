@@ -37,6 +37,11 @@ ConnectionPrimaryAction ConnectionPrimaryActionForState(ConnectionState state) {
     }
 }
 
+bool ConnectionDesiredRunningFromStoredValue(bool hasStoredValue,
+                                             bool storedValue) {
+    return hasStoredValue ? storedValue : true;
+}
+
 bool ConnectionShouldStartOnLaunch(bool desiredRunning,
                                    bool permissionsGranted,
                                    bool agentRunning) {

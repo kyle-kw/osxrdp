@@ -13,7 +13,39 @@
 #include <limits.h>
 #include <Security/Security.h>
 
-#define MAX_CONNECTION 512
+#define MAX_POLL_FDS ((XIPC_MAX_CLIENTS + 1) * 2)
+
+static int xipc_load_closed(const xipc_t* ipc)
+{
+    return __atomic_load_n(&ipc->closed, __ATOMIC_ACQUIRE);
+}
+
+static void xipc_store_closed(xipc_t* ipc, int closed)
+{
+    __atomic_store_n(&ipc->closed, closed, __ATOMIC_RELEASE);
+}
+
+static void xipc_wake(xipc_t* ipc)
+{
+    if (ipc == NULL || ipc->wakeup_pipe[1] < 0)
+    {
+        return;
+    }
+
+    ssize_t result = write(ipc->wakeup_pipe[1], "W", 1);
+    if (result < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+    {
+        xipc_store_closed(ipc, 1);
+    }
+}
+
+static void xipc_drain_wakeup(xipc_t* ipc)
+{
+    char buffer[64];
+    while (read(ipc->wakeup_pipe[0], buffer, sizeof(buffer)) > 0)
+    {
+    }
+}
 
 static int cfstring_equals_cstring(CFStringRef value, const char* expected)
 {
@@ -113,6 +145,7 @@ xipc_t* xipc_ctx_create(xipc_data_callback on_data, void* userData)
     }
     
     memset(ipc, 0x00, sizeof(xipc_t));
+    xipc_store_closed(ipc, 0);
     ipc->fd = -1;
     ipc->wakeup_pipe[0] = -1;
     ipc->wakeup_pipe[1] = -1;
@@ -142,6 +175,33 @@ void xipc_destroy(xipc_t* ipc)
         return;
     }
     
+    xipc_store_closed(ipc, 1);
+
+    xipc_t* clients = NULL;
+    if (ipc->isServer)
+    {
+        pthread_mutex_lock(&ipc->lock);
+        clients = ipc->next;
+        ipc->next = NULL;
+        pthread_mutex_unlock(&ipc->lock);
+    }
+
+    if (ipc->isServer == 1 && ipc->on_client_disconnected)
+    {
+        for (xipc_t* client = clients; client != NULL; client = client->next)
+        {
+            ipc->on_client_disconnected(ipc, client);
+        }
+    }
+
+    while (clients != NULL)
+    {
+        xipc_t* next = clients->next;
+        clients->next = NULL;
+        xipc_destroy(clients);
+        clients = next;
+    }
+
     if (ipc->fd >= 0)
     {
         close(ipc->fd);
@@ -160,43 +220,125 @@ void xipc_destroy(xipc_t* ipc)
         ipc->wakeup_pipe[1] = -1;
     }
 
+    pthread_mutex_lock(&ipc->lock);
+    xipc_msg_t* messages = ipc->out_msgs;
+    ipc->out_msgs = NULL;
+    ipc->out_msgs_end = NULL;
+    pthread_mutex_unlock(&ipc->lock);
+
+    while (messages != NULL)
+    {
+        xipc_msg_t* next = messages->next;
+        free(messages);
+        messages = next;
+    }
+
     pthread_mutex_destroy(&ipc->lock);
-    
-    if (ipc->out_msgs)
-    {
-        xipc_msg_t* msg = ipc->out_msgs;
-        while (msg != NULL)
-        {
-            xipc_msg_t* tmp = msg;
-            msg = msg->next;
-            
-            free(tmp);
-        }
-    }
-    
-    if (ipc->isServer == 1 && ipc->closed == 1 && ipc->on_client_disconnected)
-    {
-        xipc_t* client = ipc->next;
-        while (client != NULL) {
-            ipc->on_client_disconnected(ipc, client);
-            
-            client = client->next;
-        }
-    }
-    
-    if (ipc->next)
-    {
-        // remove all client info
-        xipc_destroy(ipc->next);
-    }
-    
+
     if (ipc->isServer)
     {
-        unlink(ipc->server_name);
+        struct stat socketInfo;
+        if (ipc->server_name != NULL && lstat(ipc->server_name, &socketInfo) == 0 &&
+            S_ISSOCK(socketInfo.st_mode) && socketInfo.st_uid == geteuid())
+        {
+            unlink(ipc->server_name);
+        }
     }
     
     free(ipc->server_name);
     free(ipc);
+}
+
+int xipc_validate_private_directory(const char* path, uid_t ownerUid, gid_t ownerGid)
+{
+    if (path == NULL || path[0] != '/')
+    {
+        return EINVAL;
+    }
+
+    struct stat info;
+    if (lstat(path, &info) != 0)
+    {
+        return errno;
+    }
+
+    if (!S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode) || info.st_uid != ownerUid ||
+        (ownerGid != (gid_t)-1 && info.st_gid != ownerGid) ||
+        (info.st_mode & (S_IRWXG | S_IRWXO)) != 0 ||
+        (info.st_mode & S_IRWXU) != S_IRWXU)
+    {
+        return EPERM;
+    }
+
+    return 0;
+}
+
+int xipc_prepare_private_directory(const char* path, uid_t ownerUid, gid_t ownerGid)
+{
+    if (path == NULL || path[0] != '/')
+    {
+        return EINVAL;
+    }
+
+    struct stat info;
+    if (lstat(path, &info) != 0)
+    {
+        if (errno != ENOENT)
+        {
+            return errno;
+        }
+
+        if (mkdir(path, S_IRWXU) != 0)
+        {
+            return errno;
+        }
+
+        if (geteuid() == 0 && chown(path, ownerUid, ownerGid == (gid_t)-1 ? (gid_t)-1 : ownerGid) != 0)
+        {
+            int error = errno;
+            rmdir(path);
+            return error;
+        }
+
+        if (lstat(path, &info) != 0)
+        {
+            return errno;
+        }
+    }
+
+    return xipc_validate_private_directory(path, ownerUid, ownerGid);
+}
+
+static int xipc_copy_socket_parent(const char* path, char* parent, size_t parentSize)
+{
+    size_t pathLen = strlen(path);
+    if (pathLen == 0 || pathLen >= sizeof(((struct sockaddr_un*)0)->sun_path))
+    {
+        return ENAMETOOLONG;
+    }
+
+    const char* separator = strrchr(path, '/');
+    if (separator == NULL || separator == path)
+    {
+        return EINVAL;
+    }
+
+    size_t parentLen = (size_t)(separator - path);
+    if (parentLen >= parentSize)
+    {
+        return ENAMETOOLONG;
+    }
+    memcpy(parent, path, parentLen);
+    parent[parentLen] = '\0';
+
+    return 0;
+}
+
+static int xipc_validate_socket_parent(const char* path, uid_t ownerUid, gid_t ownerGid)
+{
+    char parent[PATH_MAX];
+    int result = xipc_copy_socket_parent(path, parent, sizeof(parent));
+    return result == 0 ? xipc_validate_private_directory(parent, ownerUid, ownerGid) : result;
 }
 
 int xipc_create_server(xipc_t* ipc, const char* path, xipc_client_onconnected on_client_connected, xipc_client_ondisconnected on_client_disconnected, xipc_client_onauthorize on_client_authorize, xipc_client_onrejected on_client_rejected)
@@ -206,13 +348,34 @@ int xipc_create_server(xipc_t* ipc, const char* path, xipc_client_onconnected on
         return EINVAL;
     }
         
+    int validationError = xipc_validate_socket_parent(path, geteuid(), (gid_t)-1);
+    if (validationError != 0)
+    {
+        return validationError;
+    }
+
+    struct stat oldSocket;
+    if (lstat(path, &oldSocket) == 0)
+    {
+        if (!S_ISSOCK(oldSocket.st_mode) || oldSocket.st_uid != geteuid())
+        {
+            return EPERM;
+        }
+        if (unlink(path) != 0)
+        {
+            return errno;
+        }
+    }
+    else if (errno != ENOENT)
+    {
+        return errno;
+    }
+
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
     {
         return errno;
     }
-    
-    unlink(path);
     
     struct sockaddr_un addr = {0,};
     addr.sun_family = AF_UNIX;
@@ -269,6 +432,11 @@ int xipc_connect_server(xipc_t* ipc, const char* path)
         return EINVAL;
     }
     
+    if (strlen(path) >= sizeof(((struct sockaddr_un*)0)->sun_path))
+    {
+        return ENAMETOOLONG;
+    }
+
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0)
     {
@@ -289,10 +457,40 @@ int xipc_connect_server(xipc_t* ipc, const char* path)
     ipc->fd = fd;
     ipc->isServer = 0;
     ipc->server_name = strdup(path);
+    if (ipc->server_name == NULL)
+    {
+        close(fd);
+        ipc->fd = -1;
+        return ENOMEM;
+    }
 
     set_nonBlocking(ipc->fd);
     
     return 0;
+}
+
+int xipc_connect_server_verified(xipc_t* ipc, const char* path, uid_t ownerUid, gid_t ownerGid)
+{
+    int result = xipc_validate_socket_parent(path, ownerUid, ownerGid);
+    if (result != 0)
+    {
+        return result;
+    }
+
+    struct stat socketInfo;
+    if (lstat(path, &socketInfo) != 0)
+    {
+        return errno;
+    }
+    if (!S_ISSOCK(socketInfo.st_mode) || S_ISLNK(socketInfo.st_mode) ||
+        socketInfo.st_uid != ownerUid ||
+        (ownerGid != (gid_t)-1 && socketInfo.st_gid != ownerGid) ||
+        (socketInfo.st_mode & (S_IRWXG | S_IRWXO)) != 0)
+    {
+        return EPERM;
+    }
+
+    return xipc_connect_server(ipc, path);
 }
 
 int xipc_get_peer_pid(xipc_t* client, pid_t* pid)
@@ -315,6 +513,22 @@ int xipc_get_peer_pid(xipc_t* client, pid_t* pid)
     }
 
     *pid = peerPid;
+    return 0;
+}
+
+int xipc_get_peer_euid(xipc_t* client, uid_t* uid)
+{
+    if (client == NULL || uid == NULL || client->fd < 0)
+    {
+        return EINVAL;
+    }
+
+    gid_t gid = 0;
+    if (getpeereid(client->fd, uid, &gid) != 0)
+    {
+        return errno != 0 ? errno : -1;
+    }
+
     return 0;
 }
 
@@ -347,37 +561,6 @@ static int xipc_copy_code_for_pid(pid_t pid, SecCodeRef* outCode)
     return status == errSecSuccess ? 0 : -1;
 }
 
-static int xipc_path_is_trusted_xrdp(const char* path)
-{
-    static const char* kTrustedExactPaths[] = {
-        "/Applications/osxrdp/OSXRDP.app/Contents/MacOS/xrdp",
-        NULL
-    };
-    static const char* kTrustedSuffix = "/OSXRDP.app/Contents/MacOS/xrdp";
-
-    if (path == NULL || path[0] == '\0')
-    {
-        return 0;
-    }
-
-    for (int i = 0; kTrustedExactPaths[i] != NULL; i++)
-    {
-        if (strcmp(path, kTrustedExactPaths[i]) == 0)
-        {
-            return 1;
-        }
-    }
-
-    size_t pathLen = strlen(path);
-    size_t suffixLen = strlen(kTrustedSuffix);
-    if (pathLen >= suffixLen && strcmp(path + pathLen - suffixLen, kTrustedSuffix) == 0)
-    {
-        return 1;
-    }
-
-    return 0;
-}
-
 static int xipc_get_main_executable_path(SecCodeRef code, char* outPath, size_t outPathSize)
 {
     if (code == NULL || outPath == NULL || outPathSize == 0)
@@ -396,6 +579,40 @@ static int xipc_get_main_executable_path(SecCodeRef code, char* outPath, size_t 
     Boolean ok = CFURLGetFileSystemRepresentation(pathUrl, true, (UInt8*)outPath, (CFIndex)outPathSize);
     CFRelease(pathUrl);
     return ok ? 0 : -1;
+}
+
+bool xipc_path_matches_exact(const char* actualPath, const char* expectedPath)
+{
+    return actualPath != NULL && expectedPath != NULL && expectedPath[0] == '/' &&
+           strcmp(actualPath, expectedPath) == 0;
+}
+
+bool xipc_identity_policy_allows(const char* peerTeamId,
+                                 const char* selfTeamId,
+                                 const char* officialTeamId,
+                                 const char* peerIdentifier,
+                                 const char* expectedIdentifier,
+                                 const char* peerPath,
+                                 const char* expectedAdhocPath)
+{
+    if (peerIdentifier == NULL || expectedIdentifier == NULL ||
+        strcmp(peerIdentifier, expectedIdentifier) != 0)
+    {
+        return false;
+    }
+
+    if (peerTeamId != NULL && peerTeamId[0] != '\0')
+    {
+        return (officialTeamId != NULL && strcmp(peerTeamId, officialTeamId) == 0) ||
+               (selfTeamId != NULL && selfTeamId[0] != '\0' && strcmp(peerTeamId, selfTeamId) == 0);
+    }
+
+    return xipc_path_matches_exact(peerPath, expectedAdhocPath);
+}
+
+bool xipc_can_accept_client_count(int currentClientCount)
+{
+    return currentClientCount >= 0 && currentClientCount < XIPC_MAX_CLIENTS;
 }
 
 int xipc_is_client_signed_by(xipc_t* client, const char* expectedTeamId, const char* expectedSigningIdentifier)
@@ -468,7 +685,10 @@ cleanup:
     return result;
 }
 
-int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, const char* expectedSigningIdentifier)
+int xipc_is_trusted_peer(xipc_t* client,
+                         const char* officialTeamId,
+                         const char* expectedSigningIdentifier,
+                         const char* expectedAdhocPath)
 {
     if (client == NULL || expectedSigningIdentifier == NULL)
     {
@@ -487,6 +707,9 @@ int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, cons
     CFDictionaryRef peerInfo = NULL;
     CFDictionaryRef selfInfo = NULL;
     char peerPath[PATH_MAX] = {0};
+    char peerIdentifierValue[256] = {0};
+    char peerTeamValue[256] = {0};
+    char selfTeamValue[256] = {0};
 
     if (xipc_copy_code_for_pid(peerPid, &peerCode) != 0)
     {
@@ -509,8 +732,8 @@ int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, cons
         goto cleanup;
     }
 
-    /* Identifier must match exactly (build scripts force -i xrdp for ad-hoc). */
-    if (cfstring_equals_cstring(peerIdentifier, expectedSigningIdentifier) == 0)
+    if (!CFStringGetCString(peerIdentifier, peerIdentifierValue, sizeof(peerIdentifierValue),
+                           kCFStringEncodingUTF8))
     {
         goto cleanup;
     }
@@ -521,39 +744,40 @@ int xipc_is_trusted_xrdp_client(xipc_t* client, const char* officialTeamId, cons
         peerTeamId = NULL;
     }
 
-    /* 1) Official Developer ID release. */
-    if (officialTeamId != NULL && peerTeamId != NULL &&
-        cfstring_equals_cstring(peerTeamId, officialTeamId) != 0)
+    const char* peerTeamCString = NULL;
+    if (peerTeamId != NULL)
     {
-        result = 0;
-        goto cleanup;
+        if (!CFStringGetCString(peerTeamId, peerTeamValue, sizeof(peerTeamValue), kCFStringEncodingUTF8))
+        {
+            goto cleanup;
+        }
+        peerTeamCString = peerTeamValue;
     }
 
-    /* 2) Same team as this process (local Developer ID / Apple Development builds). */
+    const char* selfTeamCString = NULL;
     if (SecCodeCopySelf(kSecCSDefaultFlags, &selfCode) == errSecSuccess && selfCode != NULL)
     {
         if (SecCodeCopySigningInformation(selfCode, kSecCSSigningInformation, &selfInfo) == errSecSuccess && selfInfo != NULL)
         {
             CFStringRef selfTeamId = CFDictionaryGetValue(selfInfo, kSecCodeInfoTeamIdentifier);
             if (selfTeamId != NULL && CFGetTypeID(selfTeamId) == CFStringGetTypeID() &&
-                peerTeamId != NULL &&
-                CFStringCompare(peerTeamId, selfTeamId, 0) == kCFCompareEqualTo)
+                CFStringGetCString(selfTeamId, selfTeamValue, sizeof(selfTeamValue), kCFStringEncodingUTF8))
             {
-                result = 0;
-                goto cleanup;
+                selfTeamCString = selfTeamValue;
             }
         }
     }
 
-    /* 3) Local ad-hoc install: no Team ID on peer, path must be the shipped xrdp. */
-    if (peerTeamId == NULL)
+    if (peerTeamId == NULL && expectedAdhocPath != NULL)
     {
-        if (xipc_get_main_executable_path(peerCode, peerPath, sizeof(peerPath)) == 0 &&
-            xipc_path_is_trusted_xrdp(peerPath) != 0)
-        {
-            result = 0;
-            goto cleanup;
-        }
+        (void)xipc_get_main_executable_path(peerCode, peerPath, sizeof(peerPath));
+    }
+
+    if (xipc_identity_policy_allows(peerTeamCString, selfTeamCString, officialTeamId,
+                                    peerIdentifierValue, expectedSigningIdentifier,
+                                    peerPath[0] != '\0' ? peerPath : NULL, expectedAdhocPath))
+    {
+        result = 0;
     }
 
 cleanup:
@@ -586,6 +810,11 @@ int xipc_send_data(xipc_t* ipc, const void* data, int len)
     {
         return -1;
     }
+
+    if (xipc_load_closed(ipc) != 0)
+    {
+        return -1;
+    }
     
     xipc_msg_t* msg = (xipc_msg_t*)malloc(sizeof(xipc_msg_t) + len + sizeof(int));
     if (msg == NULL)
@@ -602,7 +831,14 @@ int xipc_send_data(xipc_t* ipc, const void* data, int len)
     memcpy(msg->data + sizeof(int), data, len);
     
     pthread_mutex_lock(&ipc->lock);
-    
+
+    if (xipc_load_closed(ipc) != 0)
+    {
+        pthread_mutex_unlock(&ipc->lock);
+        free(msg);
+        return -1;
+    }
+
     if (ipc->out_msgs == NULL)
     {
         ipc->out_msgs = msg;
@@ -616,28 +852,27 @@ int xipc_send_data(xipc_t* ipc, const void* data, int len)
     
     pthread_mutex_unlock(&ipc->lock);
     
-    // wake up io thread
-    write(ipc->wakeup_pipe[1], "W", sizeof(char));
+    // Wake the I/O thread. A full non-blocking pipe already represents a wakeup.
+    xipc_wake(ipc);
     
     return len;
 }
 
 void xipc_loop(xipc_t* ipc)
 {
-    struct pollfd fds[MAX_CONNECTION * 2];
-    xipc_t* ipc_map[MAX_CONNECTION * 2];
+    struct pollfd fds[MAX_POLL_FDS];
+    xipc_t* ipc_map[MAX_POLL_FDS];
     
     int numFds = 0;
     int numFdsHandled = 0;
     
-    while (ipc->closed == 0)
+    while (xipc_load_closed(ipc) == 0)
     {
         numFds = 0;
         numFdsHandled = 0;
                 
-        // clients
-        pthread_mutex_lock(&ipc->lock);
-        
+        // The I/O thread is the sole owner of the client list. Each queue is
+        // inspected under that client's own lock in prepare_wait_poll().
         prepare_wait_poll(&numFds, fds, ipc_map, ipc);
         
         xipc_t* current = ipc->next;
@@ -648,8 +883,6 @@ void xipc_loop(xipc_t* ipc)
 
             current = current->next;
         }
-        
-        pthread_mutex_unlock(&ipc->lock);
         
         if (poll(fds, numFds, -1) < 0)
         {
@@ -674,13 +907,16 @@ void xipc_loop(xipc_t* ipc)
                 client = ipc_map[numFdsHandled];
                 fdinfo = &fds[numFdsHandled];
                 
-                // dummy
-                char data[2];
-                read(client->wakeup_pipe[0], data, sizeof(char));
+                xipc_drain_wakeup(client);
                 
                 fdinfo->revents |= POLLOUT;
             }
             
+            if (fdinfo->revents & (POLLERR | POLLHUP | POLLNVAL))
+            {
+                xipc_store_closed(client, 1);
+            }
+
             // socket
             if (fdinfo->revents & POLLIN)
             {
@@ -694,28 +930,28 @@ void xipc_loop(xipc_t* ipc)
                     int needClose = 0;
                     if (recv_data_from_client(ipc, client, &needClose) != 0)
                     {
-                        client->closed = 1;
+                        xipc_store_closed(client, 1);
                     }
                     
                     if (needClose != 0)
                     {
-                        client->closed = 1;
+                        xipc_store_closed(client, 1);
                     }
                 }
             }
             
-            if (client->closed == 0 && fdinfo->revents & POLLOUT)
+            if (xipc_load_closed(client) == 0 && fdinfo->revents & POLLOUT)
             {
                 int needClose = 0;
                 send_data_to_client(client, &needClose);
                 
                 if (needClose != 0)
                 {
-                    client->closed = 1;
+                    xipc_store_closed(client, 1);
                 }
             }
             
-            if (client->closed == 1)
+            if (xipc_load_closed(client) != 0)
             {
                 if (client->isServer == 0 && ipc->on_client_disconnected)
                     ipc->on_client_disconnected(ipc, client);
@@ -741,15 +977,14 @@ escapeArea:
 }
 
 void xipc_loop_once(xipc_t* ipc) {
-    struct pollfd fds[MAX_CONNECTION * 2];
-    xipc_t* ipc_map[MAX_CONNECTION * 2];
+    struct pollfd fds[MAX_POLL_FDS];
+    xipc_t* ipc_map[MAX_POLL_FDS];
     
     int numFds = 0;
     int numFdsHandled = 0;
     
-    // clients
-    pthread_mutex_lock(&ipc->lock);
-    
+    // The I/O thread is the sole owner of the client list. Each queue is
+    // inspected under that client's own lock in prepare_wait_poll().
     prepare_wait_poll(&numFds, fds, ipc_map, ipc);
     
     xipc_t* current = ipc->next;
@@ -760,8 +995,6 @@ void xipc_loop_once(xipc_t* ipc) {
         
         current = current->next;
     }
-    
-    pthread_mutex_unlock(&ipc->lock);
     
     if (poll(fds, numFds, 0) < 0)
     {
@@ -781,13 +1014,16 @@ void xipc_loop_once(xipc_t* ipc) {
             client = ipc_map[numFdsHandled];
             fdinfo = &fds[numFdsHandled];
             
-            // dummy
-            char data[2];
-            read(client->wakeup_pipe[0], data, sizeof(char));
+            xipc_drain_wakeup(client);
             
             fdinfo->revents |= POLLOUT;
         }
         
+        if (fdinfo->revents & (POLLERR | POLLHUP | POLLNVAL))
+        {
+            xipc_store_closed(client, 1);
+        }
+
         // socket
         if (fdinfo->revents & POLLIN)
         {
@@ -801,28 +1037,28 @@ void xipc_loop_once(xipc_t* ipc) {
                 int needClose = 0;
                 if (recv_data_from_client(ipc, client, &needClose) != 0)
                 {
-                    client->closed = 1;
+                    xipc_store_closed(client, 1);
                 }
                 
                 if (needClose != 0)
                 {
-                    client->closed = 1;
+                    xipc_store_closed(client, 1);
                 }
             }
         }
         
-        if (client->closed == 0 && fdinfo->revents & POLLOUT)
+        if (xipc_load_closed(client) == 0 && fdinfo->revents & POLLOUT)
         {
             int needClose = 0;
             send_data_to_client(client, &needClose);
             
             if (needClose != 0)
             {
-                client->closed = 1;
+                xipc_store_closed(client, 1);
             }
         }
         
-        if (client->closed == 1)
+        if (xipc_load_closed(client) != 0)
         {
             if (client->isServer == 0 && ipc->on_client_disconnected)
                 ipc->on_client_disconnected(ipc, client);
@@ -846,11 +1082,34 @@ escapeArea:
     return;
 }
 
-void xipc_end_loop(xipc_t* ipc) {
-    if (ipc != NULL) {
-        ipc->closed = 1;
-        write(ipc->wakeup_pipe[1], "W", sizeof(char));
+void xipc_close(xipc_t* ipc) {
+    if (ipc == NULL) {
+        return;
     }
+
+    xipc_store_closed(ipc, 1);
+
+    pthread_mutex_lock(&ipc->lock);
+    xipc_msg_t* messages = ipc->out_msgs;
+    ipc->out_msgs = NULL;
+    ipc->out_msgs_end = NULL;
+    pthread_mutex_unlock(&ipc->lock);
+
+    while (messages != NULL) {
+        xipc_msg_t* next = messages->next;
+        free(messages);
+        messages = next;
+    }
+
+    xipc_wake(ipc);
+}
+
+int xipc_is_closed(const xipc_t* ipc) {
+    return ipc == NULL ? 1 : xipc_load_closed(ipc);
+}
+
+void xipc_end_loop(xipc_t* ipc) {
+    xipc_close(ipc);
 }
 
 
@@ -924,7 +1183,7 @@ int recv_data_from_client(xipc_t* ipc, xipc_t* client, int* needClose)
             return 0;
         }
         
-        if (client->in_len >= sizeof(int))
+        if (client->in_len >= (int)sizeof(int))
         {
             int expected_len = *(int*)&client->in_buf;
             if (expected_len <= 0 || expected_len >= MAX_BUFFER)
@@ -1014,7 +1273,7 @@ int read_data_from_socket(xipc_t* client, int* needClose)
 
 void prepare_wait_poll(int* currentIndex, struct pollfd* fds, xipc_t** ipcs, xipc_t* ipc)
 {
-    if (*currentIndex + 1 >= MAX_CONNECTION * 2)
+    if (*currentIndex + 1 >= MAX_POLL_FDS)
     {
         return;
     }
@@ -1029,7 +1288,10 @@ void prepare_wait_poll(int* currentIndex, struct pollfd* fds, xipc_t** ipcs, xip
     // socket
     fds[*currentIndex].fd = ipc->fd;
     fds[*currentIndex].events = POLLIN;
-    if (ipc->out_msgs != NULL)
+    pthread_mutex_lock(&ipc->lock);
+    int hasMessages = ipc->out_msgs != NULL;
+    pthread_mutex_unlock(&ipc->lock);
+    if (hasMessages)
     {
         fds[*currentIndex].events |= POLLOUT;
     }
@@ -1043,6 +1305,17 @@ int accept_new_client(xipc_t* ipc)
     int clientFd = accept(ipc->fd, NULL, NULL);
     if (clientFd >= 0)
     {
+        int clientCount = 0;
+        for (xipc_t* current = ipc->next; current != NULL; current = current->next)
+        {
+            clientCount++;
+        }
+        if (!xipc_can_accept_client_count(clientCount))
+        {
+            close(clientFd);
+            return EMFILE;
+        }
+
         // add client
         xipc_t* client = xipc_ctx_create(ipc->on_data, NULL);
         if (client != NULL)

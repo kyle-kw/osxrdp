@@ -57,6 +57,16 @@ TEST_CASE(permission_transition_auto_starts_only_once) {
     EXPECT_TRUE(!ConnectionShouldAutoStartAfterRefresh(true, false, true, false, true));
 }
 
+TEST_CASE(desired_running_defaults_on_and_preserves_deliberate_stop) {
+    EXPECT_TRUE(ConnectionDesiredRunningFromStoredValue(false, false));
+    EXPECT_TRUE(!ConnectionDesiredRunningFromStoredValue(true, false));
+}
+
+TEST_CASE(manual_restart_persists_running_intent) {
+    EXPECT_TRUE(ConnectionDesiredRunningFromStoredValue(true, true));
+    EXPECT_TRUE(ConnectionShouldStartOnLaunch(true, true, false));
+}
+
 int main(void) {
     RUN_TEST(missing_permission_takes_priority);
     RUN_TEST(starting_is_exposed_after_permissions);
@@ -65,5 +75,7 @@ int main(void) {
     RUN_TEST(primary_actions_match_states);
     RUN_TEST(launch_auto_start_requires_intent_permissions_and_no_agent);
     RUN_TEST(permission_transition_auto_starts_only_once);
+    RUN_TEST(desired_running_defaults_on_and_preserves_deliberate_stop);
+    RUN_TEST(manual_restart_persists_running_intent);
     return test_main_finish("test_connection_state");
 }

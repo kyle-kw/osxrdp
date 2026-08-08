@@ -7,6 +7,7 @@
 
 #include "../pch.h"
 #include "sessionmanager.h"
+#include "utils.h"
 
 #import <CoreGraphics/CoreGraphics.h>
 #import <OpenDirectory/OpenDirectory.h>
@@ -133,6 +134,28 @@ BOOL osxrdp_is_loginwindow_user(NSString* sessionUsername) {
     }
     
     return [normalizedSession isEqualToString:@"root"] || [normalizedSession isEqualToString:@"Unknown User"]; // macOS 12 first boot???
+}
+
+int osxrdp_sessionmanager_validate_user(const char* username, int usernameLen) {
+    if (!osxrdp_validate_utf8_username(username, usernameLen)) {
+        return 1;
+    }
+
+    @autoreleasepool {
+        NSString* requestedUsername = [[NSString alloc] initWithBytes:username
+                                                               length:(NSUInteger)usernameLen
+                                                             encoding:NSUTF8StringEncoding];
+        if (requestedUsername == nil || requestedUsername.length == 0) {
+            return 1;
+        }
+
+        NSError* error = nil;
+        ODNode* authNode = [ODNode nodeWithSession:[ODSession defaultSession]
+                                                type:kODNodeTypeAuthentication
+                                               error:&error];
+        uid_t uid = 0;
+        return authNode != nil && osxrdp_copy_user_uid(authNode, requestedUsername, &uid) ? 0 : 1;
+    }
 }
 
 int osxrdp_sessionmanager_getsessioninfo(const char* username, session_info_t* sessionInfo) {
@@ -295,8 +318,8 @@ void osxrdp_sessionmanager_releasesession(int sessionId) {
         
         // Look up session info using the requested session ID
         for (NSDictionary* session in sessions) {
-            NSString* current_sessionId = session[kCGSSessionIDKey];
-            NSString* current_isLogined = session[@"kCGSessionLoginDoneKey"];
+            NSNumber* current_sessionId = session[kCGSSessionIDKey];
+            NSNumber* current_isLogined = session[@"kCGSessionLoginDoneKey"];
             
             // If the session is not yet logged in, destroy it
             if (current_sessionId.intValue == sessionId && current_isLogined.intValue == 0) {

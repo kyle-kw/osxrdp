@@ -3,6 +3,7 @@
 
 #include "ipc.h"
 #include <pthread.h>
+#include <stdint.h>
 
 struct SessionManagerServerCtx {
     int unused;
@@ -13,7 +14,7 @@ public:
     SessionManagerServer();
     ~SessionManagerServer();
     
-    void Start();
+    bool Start();
     void Stop();
     bool IsRunning();
     
@@ -35,6 +36,8 @@ private:
     pthread_t _ioThread;
     int _ioThreadStarted;
     State _state;
+    int _pendingLoginWindowSessionId;
+    uint64_t _pendingLoginWindowCreatedMs;
     
     // internal helpers
     bool CreateCommandPipeServer();
