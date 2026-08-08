@@ -2,6 +2,7 @@
 #include "PermissionCheckUtils.h"
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
+#import <AppKit/AppKit.h>
 
 bool PermissionCheckUtils::HasAccPermission() {
     return AXIsProcessTrustedWithOptions(nullptr) != 0 ? true : false;
@@ -35,37 +36,17 @@ void PermissionCheckUtils::ShowScreenRecordPermissionRequestDialog() {
     CGRequestScreenCaptureAccess();
 }
 
-void PermissionCheckUtils::ResetAccPermission() {
-    NSTask* task = [[NSTask alloc] init];
-
-    [task setLaunchPath:@"/usr/bin/tccutil"];
-    [task setArguments:@[@"reset", @"Accessibility", @"com.byungho.osxrdp.mainapp"]];
-
-    @try
-    {
-      [task launch];
-      [task waitUntilExit];
-    }
-    @catch (NSException* exception)
-    {
-      return;
+void PermissionCheckUtils::OpenAccPermissionSettings() {
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
     }
 }
 
-void PermissionCheckUtils::ResetScreenRecordPermission() {
-    NSTask* task = [[NSTask alloc] init];
-
-    [task setLaunchPath:@"/usr/bin/tccutil"];
-    [task setArguments:@[@"reset", @"ScreenCapture", @"com.byungho.osxrdp.mainapp"]];
-
-    @try
-    {
-      [task launch];
-      [task waitUntilExit];
-    }
-    @catch (NSException* exception)
-    {
-      return;
+void PermissionCheckUtils::OpenScreenRecordPermissionSettings() {
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
     }
 }
 

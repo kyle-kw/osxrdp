@@ -1,6 +1,4 @@
 # osxrdp - xrdp for macOS
-<h6>English | <a href="README_ko.md">한국어</a></h6>
-
 ## Overview
 osxrdp is an unofficial module of xrdp to support rdp server in macOS.
 <img width="1282" height="832" alt="OSXRDP" src="https://github.com/user-attachments/assets/539b2870-b5c6-4d16-90b0-ad6d2799951a" />
@@ -41,4 +39,3 @@ GitHub Actions runs this suite **before** the unsigned package build.
 
 ## Etc
 osxrdp is compatible with original xrdp v0.10.6.1 version. (no modificated)
-

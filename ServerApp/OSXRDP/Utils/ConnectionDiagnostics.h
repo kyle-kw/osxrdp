@@ -2,6 +2,7 @@
 #define ConnectionDiagnostics_h
 
 #include <stdint.h>
+#include "ConnectionState.h"
 
 #ifdef __cplusplus
 
@@ -12,8 +13,7 @@ struct ConnectionDiagnosticsSnapshot {
     bool rdpClientConnected;
     bool remoteFilesReady;
     int remoteFileCount;
-    // 0=ok, 1=missing_permissions, 2=agent_stopped, 3=start_failed
-    int overallState;
+    ConnectionState state;
     const char* lastStartErrorKey; // localization key or empty
     // Session metrics (feature #11)
     int activeDisplayCount;
@@ -21,7 +21,6 @@ struct ConnectionDiagnosticsSnapshot {
     int currentHeight;
     int currentFramerate;
     char currentCodecBuf[32];
-    const char* currentCodec; // points at currentCodecBuf (or empty string)
     int frameLag;
     uint64_t totalFramesWritten;
     uint64_t droppedFrames;

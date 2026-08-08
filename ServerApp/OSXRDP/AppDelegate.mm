@@ -1,39 +1,37 @@
 #import "AppDelegate.h"
 
 #include <signal.h>
-#include "RemoteConnection/RemoteConnectionService.h"
-#include "Utils/ConnectionDiagnostics.h"
-#import "Clipboard/ClipboardManager.h"
 
+#import "Clipboard/ClipboardManager.h"
+#include "RemoteConnection/RemoteConnectionService.h"
+#include "Utils/ConnectionStatusCoordinator.h"
 #import "UI/Main/MainWindowController.h"
 #import "UI/Settings/SettingsWindow.h"
 
-
 @interface AppDelegate ()
 {
-    NSStatusItem* _trayMenu;
-    NSMenuItem* _saveCopiedFilesMenuItem;
-    NSMenuItem* _saveToDownloadsMenuItem;
-    NSMenuItem* _statusMenuItem;
-    NSMenuItem* _settingsMenuItem;
+    NSStatusItem *_statusItem;
+    NSMenuItem *_statusSummaryMenuItem;
+    NSMenuItem *_serviceActionMenuItem;
+    NSMenuItem *_saveCopiedFilesMenuItem;
+    NSMenuItem *_saveToDownloadsMenuItem;
     dispatch_source_t _sigSource;
-    NSTimer* _trayRefreshTimer;
 }
 
 @property (strong) SettingsWindow *settingsWindow;
-@property (strong) IBOutlet MainWindowController* mainWindowController;
+@property (strong) IBOutlet MainWindowController *mainWindowController;
 
 @end
 
 @implementation AppDelegate
 
-- (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
+- (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
 
     signal(SIGTERM, SIG_IGN);
     _sigSource = dispatch_source_create(DISPATCH_SOURCE_TYPE_SIGNAL, SIGTERM, 0, dispatch_get_main_queue());
     dispatch_source_set_event_handler(_sigSource, ^{
-        NSLog(@"[OSXRDP] on sigterm");
+        NSLog(@"[OSXRDP] Received SIGTERM");
         StopRemoteConnectionServerService();
         exit(0);
     });
@@ -41,195 +39,307 @@
 
     extern int g_Lockscreen;
     if (g_Lockscreen == 1) {
-        // hack
         sleep(2);
-        
         StartRemoteConnectionServerService();
         return;
     }
 
     [self setupStatusBar];
     [self.mainWindowController initializeMainUI];
-    [self refreshTrayState];
-
     [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(onRemoteFilesAvailable:)
+                                             selector:@selector(connectionStatusDidChange:)
+                                                 name:OSXRDPConnectionStatusDidChangeNotification
+                                               object:ConnectionStatusCoordinator.shared];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(remoteFilesDidChange:)
                                                  name:OSXRDPRemoteFilesAvailableNotification
                                                object:nil];
 
-    // Single refresh source for the tray (main window has its own statusTimer).
-    _trayRefreshTimer = [NSTimer scheduledTimerWithTimeInterval:2.0
-                                                         target:self
-                                                       selector:@selector(refreshTrayState)
-                                                       userInfo:nil
-                                                        repeats:YES];
+    [ConnectionStatusCoordinator.shared startMonitoring];
+    [self refreshStatusBar];
+    if ([ConnectionStatusCoordinator.shared currentState] == ConnectionState::NeedsPermissions) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self onOpenDashboardMenuClicked];
+        });
+    }
+    (void)notification;
 }
 
-- (void)applicationWillTerminate:(NSNotification *)aNotification {
+- (void)applicationWillTerminate:(NSNotification *)notification {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
-    [_trayRefreshTimer invalidate];
-    _trayRefreshTimer = nil;
+    [ConnectionStatusCoordinator.shared stopMonitoring];
     StopRemoteConnectionServerService();
+    (void)notification;
 }
 
 - (void)applicationDidBecomeActive:(NSNotification *)notification {
-    [self refreshTrayState];
+    [ConnectionStatusCoordinator.shared refreshNow];
     (void)notification;
 }
 
 - (BOOL)applicationSupportsSecureRestorableState:(NSApplication *)app {
+    (void)app;
     return NO;
 }
 
 - (void)setupStatusBar {
-    _trayMenu = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
+    _statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:NSSquareStatusItemLength];
+    NSMenu *menu = [[NSMenu alloc] init];
 
-    NSImage* img = [NSImage imageWithSystemSymbolName:@"bolt.horizontal.circle.fill" accessibilityDescription:NSLocalizedString(@"statusbar.icon.accessibility", nil)];
-    _trayMenu.button.image = img;
+    _statusSummaryMenuItem = [menu addItemWithTitle:@"" action:nil keyEquivalent:@""];
+    _statusSummaryMenuItem.enabled = NO;
+    [menu addItem:NSMenuItem.separatorItem];
 
-    NSMenu* menus = [[NSMenu alloc] init];
-    [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.title", nil) action:nil keyEquivalent:@""];
-    
-    [menus addItem:NSMenuItem.separatorItem];
-    
-    NSMenuItem* openItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.open", nil) action:@selector(onOpenWindowMenuClicked) keyEquivalent:@""];
-    openItem.target = self;
+    NSMenuItem *dashboardItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.dashboard", nil)
+                                                action:@selector(onOpenDashboardMenuClicked)
+                                         keyEquivalent:@""];
+    dashboardItem.target = self;
+    _serviceActionMenuItem = [menu addItemWithTitle:@""
+                                            action:@selector(onServiceActionMenuClicked)
+                                     keyEquivalent:@""];
+    _serviceActionMenuItem.target = self;
 
-    _statusMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.status", nil) action:@selector(onStatusMenuClicked) keyEquivalent:@""];
-    _statusMenuItem.target = self;
-    _settingsMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.settings", nil) action:@selector(onSettingsMenuClicked) keyEquivalent:@""];
-    _settingsMenuItem.target = self;
-
-    [menus addItem:NSMenuItem.separatorItem];
-
-    _saveToDownloadsMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.save_to_downloads", nil) action:@selector(onSaveToDownloadsMenuClicked) keyEquivalent:@""];
+    [menu addItem:NSMenuItem.separatorItem];
+    _saveToDownloadsMenuItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.save_to_downloads", nil)
+                                                action:@selector(onSaveToDownloadsMenuClicked)
+                                         keyEquivalent:@""];
     _saveToDownloadsMenuItem.target = self;
-
-    _saveCopiedFilesMenuItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.save_copied_files", nil) action:@selector(onSaveCopiedFilesMenuClicked) keyEquivalent:@""];
+    _saveCopiedFilesMenuItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.save_copied_files", nil)
+                                                action:@selector(onSaveCopiedFilesMenuClicked)
+                                         keyEquivalent:@""];
     _saveCopiedFilesMenuItem.target = self;
-    
-    [menus addItem:NSMenuItem.separatorItem];
-    
-    NSMenuItem* closeItem = [menus addItemWithTitle:NSLocalizedString(@"statusbar.menu.close", nil) action:@selector(onExitMenuClicked) keyEquivalent:@""];
-    closeItem.target = self;
 
-    _trayMenu.menu = menus;
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *settingsItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.settings", nil)
+                                               action:@selector(onSettingsMenuClicked)
+                                        keyEquivalent:@""];
+    settingsItem.target = self;
+    NSMenuItem *aboutItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.about", nil)
+                                            action:@selector(onAboutMenuClicked)
+                                     keyEquivalent:@""];
+    aboutItem.target = self;
+
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *quitItem = [menu addItemWithTitle:NSLocalizedString(@"statusbar.menu.quit", nil)
+                                           action:@selector(onExitMenuClicked)
+                                    keyEquivalent:@""];
+    quitItem.target = self;
+    _statusItem.menu = menu;
 }
 
-- (void)refreshTrayState {
-    ConnectionDiagnosticsSnapshot snap = ConnectionDiagnostics::Capture();
+- (void)connectionStatusDidChange:(NSNotification *)notification {
+    [self refreshStatusBar];
+    (void)notification;
+}
 
-    NSImage* img = [NSImage imageWithSystemSymbolName:@"bolt.horizontal.circle.fill"
-                             accessibilityDescription:NSLocalizedString(@"statusbar.icon.accessibility", nil)];
-    if (@available(macOS 12.0, *)) {
-        if (snap.overallState == 0) {
-            img = [img imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:[NSColor systemGreenColor]]];
-        } else if (snap.overallState == 1) {
-            img = [img imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:[NSColor systemOrangeColor]]];
-        } else {
-            img = [img imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithHierarchicalColor:[NSColor systemRedColor]]];
-        }
+- (void)remoteFilesDidChange:(NSNotification *)notification {
+    [ConnectionStatusCoordinator.shared refreshNow];
+    (void)notification;
+}
+
+- (void)refreshStatusBar {
+    ConnectionStatusCoordinator *coordinator = ConnectionStatusCoordinator.shared;
+    ConnectionDiagnosticsSnapshot snap = [coordinator currentSnapshot];
+    ConnectionState state = [coordinator currentState];
+
+    NSString *stateTitle = [self titleForState:state];
+    _statusSummaryMenuItem.title =
+        [NSString stringWithFormat:NSLocalizedString(@"statusbar.menu.status_summary", nil), stateTitle];
+
+    NSColor *color = NSColor.secondaryLabelColor;
+    switch (state) {
+        case ConnectionState::NeedsPermissions:
+        case ConnectionState::Starting:
+            color = NSColor.systemOrangeColor;
+            break;
+        case ConnectionState::Ready:
+            color = NSColor.systemGreenColor;
+            break;
+        case ConnectionState::Connected:
+            color = NSColor.systemBlueColor;
+            break;
+        case ConnectionState::Stopped:
+            color = NSColor.secondaryLabelColor;
+            break;
+        case ConnectionState::Failed:
+            color = NSColor.systemRedColor;
+            break;
     }
-    _trayMenu.button.image = img;
-    // Keep the item clickable; color already encodes health (green/orange/red).
 
-    int count = snap.remoteFileCount;
-    if (count > 0) {
+    NSImage *image = [NSImage imageWithSystemSymbolName:@"bolt.horizontal.circle.fill"
+                              accessibilityDescription:NSLocalizedString(@"statusbar.icon.accessibility", nil)];
+    if (@available(macOS 12.0, *)) {
+        image = [image imageWithSymbolConfiguration:
+            [NSImageSymbolConfiguration configurationWithHierarchicalColor:color]];
+    }
+    _statusItem.button.image = image;
+
+    switch (ConnectionPrimaryActionForState(state)) {
+        case ConnectionPrimaryAction::None:
+            _serviceActionMenuItem.title = NSLocalizedString(@"main.action.starting", nil);
+            break;
+        case ConnectionPrimaryAction::SetUpPermissions:
+            _serviceActionMenuItem.title = NSLocalizedString(@"main.action.permissions", nil);
+            break;
+        case ConnectionPrimaryAction::StartService:
+            _serviceActionMenuItem.title = NSLocalizedString(@"main.action.start", nil);
+            break;
+        case ConnectionPrimaryAction::StopService:
+            _serviceActionMenuItem.title = NSLocalizedString(@"main.action.stop", nil);
+            break;
+        case ConnectionPrimaryAction::Retry:
+            _serviceActionMenuItem.title = NSLocalizedString(@"main.action.retry", nil);
+            break;
+    }
+
+    if (snap.remoteFileCount > 0) {
         _saveCopiedFilesMenuItem.title =
-            [NSString stringWithFormat:NSLocalizedString(@"statusbar.menu.save_copied_files_count", nil), count];
+            [NSString stringWithFormat:NSLocalizedString(@"statusbar.menu.save_copied_files_count", nil), snap.remoteFileCount];
         _saveToDownloadsMenuItem.title =
-            [NSString stringWithFormat:NSLocalizedString(@"statusbar.menu.save_to_downloads_count", nil), count];
+            [NSString stringWithFormat:NSLocalizedString(@"statusbar.menu.save_to_downloads_count", nil), snap.remoteFileCount];
     } else {
         _saveCopiedFilesMenuItem.title = NSLocalizedString(@"statusbar.menu.save_copied_files", nil);
         _saveToDownloadsMenuItem.title = NSLocalizedString(@"statusbar.menu.save_to_downloads", nil);
     }
-    // Tray tooltip with session metrics (feature #11)
+
     if (snap.rdpClientConnected) {
-        NSString *codec = snap.currentCodec ? [NSString stringWithUTF8String:snap.currentCodec] : @"";
-        _trayMenu.button.toolTip = [NSString stringWithFormat:@"%@\n%dx%d · %@ · %d fps\n%@: %d",
-                                    NSLocalizedString(@"statusbar.menu.title", nil),
-                                    snap.currentWidth, snap.currentHeight,
-                                    codec, snap.currentFramerate,
-                                    NSLocalizedString(@"settings.diag.frame_lag", nil),
-                                    snap.frameLag];
+        NSString *codec = snap.currentCodecBuf[0] != '\0' ? [NSString stringWithUTF8String:snap.currentCodecBuf] : @"—";
+        _statusItem.button.toolTip = [NSString stringWithFormat:@"%@\n%d × %d · %@ · %d fps",
+                                      stateTitle, snap.currentWidth, snap.currentHeight,
+                                      codec, snap.currentFramerate];
     } else {
-        _trayMenu.button.toolTip = NSLocalizedString(@"statusbar.menu.title", nil);
+        _statusItem.button.toolTip = stateTitle;
     }
 }
 
-- (void)onRemoteFilesAvailable:(NSNotification*)notification {
-    [self refreshTrayState];
-    (void)notification;
+- (NSString *)titleForState:(ConnectionState)state {
+    switch (state) {
+        case ConnectionState::NeedsPermissions:
+            return NSLocalizedString(@"statusbar.state.permissions", nil);
+        case ConnectionState::Starting:
+            return NSLocalizedString(@"statusbar.state.starting", nil);
+        case ConnectionState::Ready:
+            return NSLocalizedString(@"statusbar.state.ready", nil);
+        case ConnectionState::Connected:
+            return NSLocalizedString(@"statusbar.state.connected", nil);
+        case ConnectionState::Stopped:
+            return NSLocalizedString(@"statusbar.state.stopped", nil);
+        case ConnectionState::Failed:
+            return NSLocalizedString(@"statusbar.state.failed", nil);
+    }
 }
 
-- (BOOL)validateMenuItem:(NSMenuItem *)menuItem {
+- (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
+    id object = (id)item;
+    if (![object isKindOfClass:NSMenuItem.class]) {
+        return YES;
+    }
+    NSMenuItem *menuItem = (NSMenuItem *)object;
     if (menuItem == _saveCopiedFilesMenuItem || menuItem == _saveToDownloadsMenuItem) {
-        return HasRemoteClipboardFiles();
+        ConnectionDiagnosticsSnapshot snap = [ConnectionStatusCoordinator.shared currentSnapshot];
+        return snap.remoteFileCount > 0;
     }
-
+    if (menuItem == _serviceActionMenuItem) {
+        return [ConnectionStatusCoordinator.shared currentState] != ConnectionState::Starting;
+    }
     return YES;
 }
 
-- (void)onOpenWindowMenuClicked {
+- (void)onOpenDashboardMenuClicked {
     [NSApp activateIgnoringOtherApps:YES];
     [self.mainWindowController showMainWindow];
 }
 
-- (void)onStatusMenuClicked {
-    // Open the main window status panel only (avoid stacking a duplicate modal alert).
-    [self onOpenWindowMenuClicked];
+- (void)onServiceActionMenuClicked {
+    ConnectionStatusCoordinator *coordinator = ConnectionStatusCoordinator.shared;
+    ConnectionState state = [coordinator currentState];
+    switch (ConnectionPrimaryActionForState(state)) {
+        case ConnectionPrimaryAction::SetUpPermissions:
+            [NSApp activateIgnoringOtherApps:YES];
+            [self.mainWindowController showPermissionSetup];
+            break;
+        case ConnectionPrimaryAction::StartService:
+        case ConnectionPrimaryAction::Retry:
+            [coordinator startService];
+            break;
+        case ConnectionPrimaryAction::StopService:
+            if (state == ConnectionState::Connected && ![self confirmActiveDisconnectWithQuit:NO]) {
+                return;
+            }
+            [coordinator stopService];
+            break;
+        case ConnectionPrimaryAction::None:
+            break;
+    }
 }
 
 - (void)onSettingsMenuClicked {
+    [self showSettings];
+}
+
+- (void)showSettings {
     [NSApp activateIgnoringOtherApps:YES];
-    // Don't stack: if already open, just bring to front
-    if (self.settingsWindow != nil) {
-        NSWindow *existing = [self.settingsWindow window];
-        if (existing != nil && existing.isVisible) {
-            [existing makeKeyAndOrderFront:nil];
-            return;
-        }
+    if (self.settingsWindow != nil && self.settingsWindow.window.isVisible) {
+        [self.settingsWindow.window makeKeyAndOrderFront:nil];
+        return;
     }
-    NSWindow *host = self.mainWindowController.window;
+
     self.settingsWindow = [[SettingsWindow alloc] init];
-    NSWindow *sheet = [self.settingsWindow window];
+    NSWindow *settings = self.settingsWindow.window;
     __weak AppDelegate *weakSelf = self;
     self.settingsWindow.onClose = ^{
         weakSelf.settingsWindow = nil;
     };
-    if (host == nil) {
-        [sheet center];
-        [sheet makeKeyAndOrderFront:nil];
-        return;
+
+    NSWindow *host = self.mainWindowController.window;
+    if (host != nil && host.isVisible) {
+        [host beginSheet:settings completionHandler:^(NSModalResponse returnCode) {
+            (void)returnCode;
+            weakSelf.settingsWindow = nil;
+        }];
+    } else {
+        [settings center];
+        [settings makeKeyAndOrderFront:nil];
     }
-    [host beginSheet:sheet completionHandler:^(NSModalResponse returnCode) {
-        (void)returnCode;
-        // Sheet path: windowWillClose fires onClose first; this is the definitive clear.
-        weakSelf.settingsWindow = nil;
+}
+
+- (void)onAboutMenuClicked {
+    NSString *creditsText = NSLocalizedString(@"about.credits", nil);
+    NSMutableAttributedString *credits = [[NSMutableAttributedString alloc] initWithString:creditsText];
+    NSRange projectRange = [creditsText rangeOfString:@"GitHub"];
+    if (projectRange.location != NSNotFound) {
+        [credits addAttribute:NSLinkAttributeName
+                       value:@"https://github.com/bho3538/osxrdp"
+                       range:projectRange];
+    }
+    [NSApp activateIgnoringOtherApps:YES];
+    [NSApp orderFrontStandardAboutPanelWithOptions:@{
+        NSAboutPanelOptionCredits: credits,
+        NSAboutPanelOptionApplicationName: @"OSXRDP",
     }];
 }
 
 - (void)onExitMenuClicked {
+    ConnectionDiagnosticsSnapshot snap = [ConnectionStatusCoordinator.shared currentSnapshot];
+    if (snap.rdpClientConnected && ![self confirmActiveDisconnectWithQuit:YES]) {
+        return;
+    }
+    [NSApp terminate:nil];
+}
+
+- (BOOL)confirmActiveDisconnectWithQuit:(BOOL)quit {
     [NSApp activateIgnoringOtherApps:YES];
-
-    NSAlert* alert = [[NSAlert alloc] init];
-    if (alert == nil) {
-        return;
-    }
-
-    [alert setMessageText:NSLocalizedString(@"statusbar.quit.confirm.title", nil)];
-    [alert setInformativeText:NSLocalizedString(@"statusbar.quit.confirm.message", nil)];
-    [alert setAlertStyle:NSAlertStyleWarning];
-    NSButton* noButton = [alert addButtonWithTitle:NSLocalizedString(@"statusbar.quit.confirm.no", nil)];
-    NSButton* yesButton = [alert addButtonWithTitle:NSLocalizedString(@"statusbar.quit.confirm.yes", nil)];
-    [noButton setKeyEquivalent:@"\r"];
-    [yesButton setKeyEquivalent:@""];
-
-    if ([alert runModal] != NSAlertSecondButtonReturn) {
-        return;
-    }
-
-    [[NSApplication sharedApplication] terminate:nil];
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = quit
+        ? NSLocalizedString(@"statusbar.quit.confirm.title", nil)
+        : NSLocalizedString(@"main.stop.confirm.title", nil);
+    alert.informativeText = NSLocalizedString(@"statusbar.quit.confirm.message", nil);
+    alert.alertStyle = NSAlertStyleWarning;
+    [alert addButtonWithTitle:NSLocalizedString(@"common.cancel", nil)];
+    [alert addButtonWithTitle:quit
+        ? NSLocalizedString(@"statusbar.menu.quit", nil)
+        : NSLocalizedString(@"main.action.stop", nil)];
+    return [alert runModal] == NSAlertSecondButtonReturn;
 }
 
 - (void)onSaveCopiedFilesMenuClicked {

@@ -35,15 +35,12 @@ ConnectionDiagnosticsSnapshot ConnectionDiagnostics::Capture(void) {
                               &s.currentFramerate, s.currentCodecBuf, sizeof(s.currentCodecBuf),
                               &s.frameLag, &s.totalFramesWritten, &s.droppedFrames,
                               &s.copyFailures, &s.rfxFullRedrawRequests, &s.imeTimeouts);
-    s.currentCodec = s.currentCodecBuf;
     s.lastStartErrorKey = g_lastStartErrorKey[0] != '\0' ? g_lastStartErrorKey : "";
-
-    if (s.accessibilityGranted == false || s.screenRecordingGranted == false) {
-        s.overallState = 1; // missing permissions
-    } else if (s.agentRunning == false) {
-        s.overallState = (g_lastStartErrorKey[0] != '\0') ? 3 : 2; // failed or stopped
-    } else {
-        s.overallState = 0;
-    }
+    s.state = ConnectionStateResolve(s.accessibilityGranted,
+                                     s.screenRecordingGranted,
+                                     s.agentRunning,
+                                     s.rdpClientConnected,
+                                     false,
+                                     g_lastStartErrorKey[0] != '\0');
     return s;
 }

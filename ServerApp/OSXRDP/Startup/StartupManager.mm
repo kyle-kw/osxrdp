@@ -1,67 +1,45 @@
 #include "StartupManager.h"
 
 #import <ServiceManagement/ServiceManagement.h>
+#import <AppKit/AppKit.h>
 
-bool StartupManager::IsStartupEnabled()
-{
-  if (@available(macOS 13.0, *))
-  {
-    auto status = [SMAppService mainAppService].status;
-    
-    if (status == SMAppServiceStatusEnabled)
-    {
-      return true;
+static NSString *const StartupManagerErrorDomain = @"com.byungho.osxrdp.startup";
+
+StartupStatus StartupManager::GetStatus() {
+    if (@available(macOS 13.0, *)) {
+        switch ([SMAppService mainAppService].status) {
+            case SMAppServiceStatusEnabled:
+                return StartupStatus::Enabled;
+            case SMAppServiceStatusRequiresApproval:
+                return StartupStatus::RequiresApproval;
+            case SMAppServiceStatusNotRegistered:
+            case SMAppServiceStatusNotFound:
+                return StartupStatus::Disabled;
+        }
     }
-    
+    return StartupStatus::Unsupported;
+}
+
+bool StartupManager::SetEnabled(bool enabled, NSError* __autoreleasing* error) {
+    if (@available(macOS 13.0, *)) {
+        if (enabled) {
+            return [[SMAppService mainAppService] registerAndReturnError:error] == YES;
+        }
+        return [[SMAppService mainAppService] unregisterAndReturnError:error] == YES;
+    }
+
+    if (error != nil) {
+        *error = [NSError errorWithDomain:StartupManagerErrorDomain
+                                     code:1
+                                 userInfo:@{NSLocalizedDescriptionKey:
+                                                NSLocalizedString(@"settings.startup.unsupported", nil)}];
+    }
     return false;
-  }
-  
-  return false;
 }
 
-bool StartupManager::EnableStartup()
-{
-  if (@available(macOS 13.0, *))
-  {
-    NSError* err = nil;
-    
-    BOOL re = [[SMAppService mainAppService] registerAndReturnError: &err];
-    if (re == NO)
-    {
-      return false;
+void StartupManager::OpenLoginItemsSettings() {
+    NSURL *url = [NSURL URLWithString:@"x-apple.systempreferences:com.apple.LoginItems-Settings.extension"];
+    if (url != nil) {
+        [[NSWorkspace sharedWorkspace] openURL:url];
     }
-    
-    return true;
-  }
-  
-  return false;
 }
-
-bool StartupManager::DisableStartup()
-{
-  if (@available(macOS 13.0, *))
-  {
-    NSError* err = nil;
-    
-    BOOL re = [[SMAppService mainAppService] unregisterAndReturnError: &err];
-    if (re == NO)
-    {
-      return false;
-    }
-    
-    return true;
-  }
-  
-  return false;
-}
-
-bool StartupManager::IsMacOS13OrHigher()
-{
-  if (@available(macOS 13.0, *))
-  {
-    return true;
-  }
-  
-  return false;
-}
-

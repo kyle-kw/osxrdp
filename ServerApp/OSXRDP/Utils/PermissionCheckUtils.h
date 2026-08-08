@@ -11,10 +11,10 @@ public:
     static void ShowAccPermissionRequestDialog();
     
     static void ShowScreenRecordPermissionRequestDialog();
-    
-    static void ResetAccPermission();
-    
-    static void ResetScreenRecordPermission();
+
+    static void OpenAccPermissionSettings();
+
+    static void OpenScreenRecordPermissionSettings();
     
     static bool HasAllPermissionToStartRemoteConnection();
 };

@@ -4,5 +4,6 @@
 
 - (void)initializeMainUI;
 - (void)showMainWindow;
+- (void)showPermissionSetup;
 
 @end

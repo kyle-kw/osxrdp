@@ -5,12 +5,10 @@
    <img width="318" height="180" alt="" src="https://github.com/user-attachments/assets/1656a214-49b0-43fe-aede-951107fe5060" /> \
    After start it, Click followed icon at top status bar and select 'Open' \
    <img width="57" height="32" alt="" src="https://github.com/user-attachments/assets/921be3bd-ffd9-40d3-b9fc-e7fd22e5aa1e" />
-4. Click the **Check** button next to **Permission Status**.
-5. Click the **Refresh** button next to **Accessibility Permission** to grant Accessibility permission.
-6. Click the **Refresh** button next to **Screen Record Permission** to grant screen recording permission.\
-   If a “Quit and Relaunch” popup appears at this time, select **Later**.
-7. Click the **Restart** button to restart the app.
-8. If **Remote connection status** shows **running** as follows, remote access is enabled. \
+4. When the Dashboard opens, click **Set Up Permissions…**.
+5. Grant **Accessibility** and **Screen Recording** access. Use **Open Settings…** if macOS does not show the permission prompt again.
+6. Return to OSXRDP. The Dashboard refreshes automatically and starts the remote service when both permissions are available.
+7. If the Dashboard shows **Ready for Connections**, remote access is enabled. \
    <img width="633" height="450" alt="" src="https://github.com/user-attachments/assets/b7bd3a0a-b699-4980-bb52-9f7422b8586b" />
 10. Use your macOS account name and password as the remote access account name and password.
 
@@ -53,8 +51,8 @@ Starting from **osxrdp 2.0.0**, osxrdp supports file and folder copy between the
 
 ## Connection status
 
-The main window shows Accessibility, Screen Recording, remote agent, and RDP session status.  
-If permissions are missing at launch, the permission sheet opens automatically. Use **Check Status** for a short diagnostic summary. The menu-bar icon is green when healthy, orange when permissions are missing, and red when the agent is stopped.
+The Dashboard shows Accessibility, Screen Recording, remote agent, and RDP session status.
+If permissions are missing at launch, the Dashboard opens automatically without blocking the rest of the app. The menu-bar icon is green when ready, blue while connected, orange when permissions are missing, gray when deliberately stopped, and red after a start failure. Use **Settings → Diagnostics** for session metrics.
 
 ## Other
 * For the best stability, it is recommended that the remote Mac be connected to a wired network.\

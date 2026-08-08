@@ -37,12 +37,14 @@ bool StartRemoteConnectionServerService(void) {
 
 void StopRemoteConnectionServerService(void) {
     if (g_server == nullptr) {
+        ConnectionDiagnostics::SetLastStartErrorKey(NULL);
         return;
     }
 
     g_server->Stop();
     delete g_server;
     g_server = nullptr;
+    ConnectionDiagnostics::SetLastStartErrorKey(NULL);
 }
 
 bool IsRemoteConnectionServerServiceRunning(void) {

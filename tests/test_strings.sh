@@ -1,17 +1,25 @@
 #!/bin/bash
-# Smoke-check that localization keys used by UI code exist in en/ko catalogs.
+# Smoke-check that required UI keys exist in the English catalog.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EN="$ROOT/ServerApp/OSXRDP/en.lproj/Localizable.strings"
-KO="$ROOT/ServerApp/OSXRDP/ko.lproj/Localizable.strings"
 
 fail=0
 keys=(
-  "diag.button.check_status"
-  "diag.alert.title"
+  "main.state.permissions.title"
+  "main.state.ready.title"
+  "main.state.connected.metrics"
+  "main.action.permissions"
+  "main.action.stop"
+  "main.files.count"
+  "permission.button.grant"
+  "permission.button.open_settings"
   "diag.error.missing_permissions"
   "diag.error.agent_start_failed"
+  "settings.startup.requires_approval"
+  "settings.startup.unsupported"
+  "settings.diag.session_title"
   "filecopy.alert.success"
   "filecopy.alert.show_in_finder"
   "filecopy.alert.disconnected"
@@ -19,11 +27,13 @@ keys=(
   "filecopy.status.item"
   "filecopy.notify.body"
   "statusbar.menu.save_to_downloads"
-  "statusbar.menu.status"
+  "statusbar.menu.dashboard"
+  "statusbar.menu.status_summary"
+  "statusbar.menu.quit"
 )
 
 echo "== test_strings =="
-for f in "$EN" "$KO"; do
+for f in "$EN"; do
   if [[ ! -f "$f" ]]; then
     echo "  FAIL missing file: $f"
     fail=1
@@ -37,8 +47,13 @@ for f in "$EN" "$KO"; do
   done
 done
 
+if rg -n -P --glob '!extern_lib/**' --glob '!package/source/resources/**' '[\x{AC00}-\x{D7A3}]' "$ROOT"; then
+  echo "  FAIL Korean text remains in the repository"
+  fail=1
+fi
+
 if [[ "$fail" -eq 0 ]]; then
-  echo "OK  test_strings (${#keys[@]} keys x 2 locales)"
+  echo "OK  test_strings (${#keys[@]} English keys; no Korean text)"
   exit 0
 fi
 echo "FAIL test_strings"

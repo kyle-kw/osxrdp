@@ -159,6 +159,10 @@ build_and_run_cxx test_command_packing \
   "$ROOT/osxup/Command/Command.cpp" \
   "$ROOT/ScreenMirrorLib/xstream.c"
 
+build_and_run_cxx test_connection_state \
+  "$ROOT/tests/test_connection_state.cpp" \
+  "$ROOT/ServerApp/OSXRDP/Utils/ConnectionState.cpp"
+
 build_and_run_objc test_clip_protocol \
   "$ROOT/tests/test_clip_protocol.mm" \
   "$ROOT/ServerApp/OSXRDP/Clipboard/ClipProtocol.mm"

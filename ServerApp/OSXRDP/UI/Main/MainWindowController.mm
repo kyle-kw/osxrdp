@@ -17,6 +17,10 @@
     }
 
     self.didInitializeMainUI = YES;
+    [self.window setContentSize:NSMakeSize(560.0, 450.0)];
+    self.window.minSize = NSMakeSize(520.0, 420.0);
+    self.window.title = @"OSXRDP";
+    self.window.collectionBehavior = NSWindowCollectionBehaviorMoveToActiveSpace;
     [self.mainViewController configureInitialState];
 }
 
@@ -25,6 +29,11 @@
 
     [self.window makeKeyAndOrderFront:nil];
     [self.window orderFrontRegardless];
+}
+
+- (void)showPermissionSetup {
+    [self showMainWindow];
+    [self.mainViewController showPermissionSetup];
 }
 
 @end
