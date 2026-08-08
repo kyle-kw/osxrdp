@@ -132,6 +132,43 @@ build_and_run_objc() {
   fi
 }
 
+build_and_run_ipc_bundle() {
+  local name="test_ipc_bundle_identity"
+  local app="$OUT/IPCBundlePeer.app"
+  local executable="$app/Contents/MacOS/ipc_bundle_peer"
+  local info_plist="$app/Contents/Info.plist"
+
+  echo ""
+  echo "-- building $name (ad-hoc app bundle) --"
+  mkdir -p "$app/Contents/MacOS"
+  plutil -create xml1 "$info_plist"
+  plutil -insert CFBundleExecutable -string ipc_bundle_peer "$info_plist"
+  plutil -insert CFBundleIdentifier -string com.byungho.osxrdp.testpeer "$info_plist"
+  plutil -insert CFBundleName -string IPCBundlePeer "$info_plist"
+  plutil -insert CFBundlePackageType -string APPL "$info_plist"
+  plutil -insert CFBundleVersion -string 1 "$info_plist"
+
+  if ! "$CC" "${CFLAGS[@]}" \
+    "$ROOT/tests/test_ipc_bundle_identity.c" \
+    "$ROOT/ScreenMirrorLib/ipc.c" \
+    -framework Security -framework CoreFoundation -lpthread \
+    -o "$executable"; then
+    echo "FAIL compile $name"
+    failures=$((failures + 1))
+    return
+  fi
+
+  if ! codesign --force --sign - "$app"; then
+    echo "FAIL sign $name"
+    failures=$((failures + 1))
+    return
+  fi
+
+  if ! "$executable"; then
+    failures=$((failures + 1))
+  fi
+}
+
 build_and_run test_xstream \
   "$ROOT/tests/test_xstream.c" \
   "$ROOT/ScreenMirrorLib/xstream.c"
@@ -152,6 +189,8 @@ build_and_run test_ipc \
   -framework Security \
   -framework CoreFoundation \
   -lpthread
+
+build_and_run_ipc_bundle
 
 build_and_run test_session_protocol \
   "$ROOT/tests/test_session_protocol.c" \

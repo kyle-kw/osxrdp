@@ -561,23 +561,23 @@ static int xipc_copy_code_for_pid(pid_t pid, SecCodeRef* outCode)
     return status == errSecSuccess ? 0 : -1;
 }
 
-static int xipc_get_main_executable_path(SecCodeRef code, char* outPath, size_t outPathSize)
+static int xipc_get_main_executable_path(CFDictionaryRef signingInfo, char* outPath, size_t outPathSize)
 {
-    if (code == NULL || outPath == NULL || outPathSize == 0)
+    if (signingInfo == NULL || outPath == NULL || outPathSize == 0)
     {
         return -1;
     }
 
     outPath[0] = '\0';
 
-    CFURLRef pathUrl = NULL;
-    if (SecCodeCopyPath(code, kSecCSDefaultFlags, &pathUrl) != errSecSuccess || pathUrl == NULL)
+    CFTypeRef pathValue = CFDictionaryGetValue(signingInfo, kSecCodeInfoMainExecutable);
+    if (pathValue == NULL || CFGetTypeID(pathValue) != CFURLGetTypeID())
     {
         return -1;
     }
 
+    CFURLRef pathUrl = (CFURLRef)pathValue;
     Boolean ok = CFURLGetFileSystemRepresentation(pathUrl, true, (UInt8*)outPath, (CFIndex)outPathSize);
-    CFRelease(pathUrl);
     return ok ? 0 : -1;
 }
 
@@ -770,7 +770,7 @@ int xipc_is_trusted_peer(xipc_t* client,
 
     if (peerTeamId == NULL && expectedAdhocPath != NULL)
     {
-        (void)xipc_get_main_executable_path(peerCode, peerPath, sizeof(peerPath));
+        (void)xipc_get_main_executable_path(peerInfo, peerPath, sizeof(peerPath));
     }
 
     if (xipc_identity_policy_allows(peerTeamCString, selfTeamCString, officialTeamId,
