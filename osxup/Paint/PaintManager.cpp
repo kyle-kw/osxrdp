@@ -12,7 +12,6 @@
 #include <unistd.h>
 #include <time.h>
 
-static const char* OSXRDP_SCREENSHM_NAME = "/osxrdpshm";
 static const char* OSXRDP_CURSORSHM_NAME = "/osxrdpcursorshm";
 
 static uint64_t MonotonicNanos() {
@@ -99,17 +98,30 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
         monitorCount = 16;
     }
 
-    if (get_object_name(sessionId, OSXRDP_SCREENSHM_NAME, shm_name, sizeof(shm_name), isLockScreen) == 0) {
+    if (get_object_name(sessionId, OSXRDP_SCREENRECORD_SHM_NAME,
+                        shm_name, sizeof(shm_name), isLockScreen) == 0) {
         // log
         return false;
     }
 
+    bool hasCompatibleRecordShm = false;
     for (int i = 0; i < monitorCount; i++) {
         char shm_name_with_idx[512];
         snprintf(shm_name_with_idx, sizeof(shm_name_with_idx), "%s_%d", shm_name, i);
 
         // SHM may exist only for some output monitors (e.g. lock screen).
         _recordShm[i] = xshm_open(shm_name_with_idx);
+
+        if (_recordShm[i] != NULL &&
+            !osxrdp_screenrecord_shm_is_compatible(
+                (const screenrecord_shm_t*)_recordShm[i]->mem,
+                _recordShm[i]->size)) {
+            ReleaseResources();
+            return false;
+        }
+        if (_recordShm[i] != NULL) {
+            hasCompatibleRecordShm = true;
+        }
 
         if (mod->client_info.display_sizes.monitorCount == 0 && _recordShm[i] == NULL) {
             // log
@@ -118,6 +130,10 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
         }
 
         _recordShmCnt++;
+    }
+    if (!hasCompatibleRecordShm) {
+        ReleaseResources();
+        return false;
     }
     
     if (get_object_name(sessionId, OSXRDP_CURSORSHM_NAME, shm_name, sizeof(shm_name), isLockScreen) == 0) {
@@ -351,7 +367,8 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
     }
 
     xshm_t* recordShm = _recordShm[displayIdx];
-    if (recordShm->size < sizeof(screenrecord_shm_t)) {
+    if (!osxrdp_screenrecord_shm_is_compatible(
+            (const screenrecord_shm_t*)recordShm->mem, recordShm->size)) {
         return false;
     }
 

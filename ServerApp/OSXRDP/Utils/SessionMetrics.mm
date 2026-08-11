@@ -21,6 +21,11 @@ static const char *CodecNameForRecordFormat(int fmt, int preset) {
     }
 }
 
+int SessionMetricsBitrateBucketForSecond(time_t second) {
+    if (second < 0) return -1;
+    return (int)((uint64_t)second % 5);
+}
+
 @interface SessionMetrics ()
 - (void)copyStreamingPreset:(int *)preset encodedBytes:(uint64_t *)encodedBytes
         recentBitsPerSecond:(uint64_t *)recentBitsPerSecond
@@ -103,7 +108,8 @@ static const char *CodecNameForRecordFormat(int fmt, int preset) {
         self->_encodedScreenBytes += bytes;
         if (keyframe) self->_keyframes++;
         time_t second = time(NULL);
-        int bucket = (int)(second % 5);
+        int bucket = SessionMetricsBitrateBucketForSecond(second);
+        if (bucket < 0) return;
         if (self->_bitrateSeconds[bucket] != second) {
             self->_bitrateSeconds[bucket] = second;
             self->_bitrateBytes[bucket] = 0;

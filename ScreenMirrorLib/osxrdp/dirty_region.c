@@ -73,7 +73,7 @@ int osxrdp_dirty_region_merge(struct RECT* rects, int* rectCount,
         return *rectCount == 0 ? OSXRDP_DIRTY_MERGE_EMPTY : OSXRDP_DIRTY_MERGE_DIRTY;
     }
     if (additions == NULL) return OSXRDP_DIRTY_MERGE_FULL;
-    if (*rectCount + additionCount <= MAX_DIRTY_COUNT) {
+    if (additionCount <= MAX_DIRTY_COUNT - *rectCount) {
         memcpy(rects + *rectCount, additions, sizeof(struct RECT) * additionCount);
         *rectCount += additionCount;
         return OSXRDP_DIRTY_MERGE_DIRTY;

@@ -649,7 +649,8 @@ bool ScreenRecorderManager::CreateRecordShm(int recordIdx) {
     }
     
     char shm_name[512];
-    if (get_object_name_by_sessionid("/osxrdpshm", shm_name, 512, is_root_process()) == 0) {
+    if (get_object_name_by_sessionid(OSXRDP_SCREENRECORD_SHM_NAME,
+                                     shm_name, 512, is_root_process()) == 0) {
         return false;
     }
     
@@ -657,8 +658,9 @@ bool ScreenRecorderManager::CreateRecordShm(int recordIdx) {
     snprintf(shm_name_with_idx, sizeof(shm_name_with_idx), "%s_%d", shm_name, outputIndex);
 
     size_t slotsSize = 0, shmSize = 0;
+    const size_t headerSize = offsetof(screenrecord_shm_t, screenrecord_datas);
     if (!CheckedMulSize(rawDataSize, FRAME_SLOTS, &slotsSize) ||
-        !CheckedAddSize(sizeof(screenrecord_shm_t), slotsSize, &shmSize)) return false;
+        !CheckedAddSize(headerSize, slotsSize, &shmSize)) return false;
 
     _recordShm[outputIndex] = xshm_create(shm_name_with_idx, shmSize);
     if (_recordShm[outputIndex] == NULL) {
@@ -670,6 +672,10 @@ bool ScreenRecorderManager::CreateRecordShm(int recordIdx) {
     memset(_recordShm[outputIndex]->mem, 0x00, shmSize);
     
     screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[outputIndex]->mem;
+    shm->layoutMagic = OSXRDP_SCREENRECORD_SHM_MAGIC;
+    shm->layoutVersion = OSXRDP_SCREENRECORD_SHM_LAYOUT_VERSION;
+    shm->headerSize = (uint32_t)headerSize;
+    shm->frameSize = (uint32_t)sizeof(screenrecord_frame_t);
     shm->width = width;
     shm->height = height;
     shm->fps = _recordParams.framerate;
@@ -1463,9 +1469,14 @@ void ScreenRecorderManager::HandleH264AnnexBRecordData(void* pixelBuffer,
 
     std::vector<uint8_t> annexB;
     bool keyframe = false;
-    bool encoded = recorder->_h264Encoder[displayIdx]->Encode(
+    H264EncodeStatus encodeStatus = recorder->_h264Encoder[displayIdx]->Encode(
         (CVPixelBufferRef)pixelBuffer, forceFull, &annexB, &keyframe);
-    if (!encoded) {
+    if (encodeStatus == H264EncodeStatus::Dropped) {
+        recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
+                                                  dirtyRects, dirtyRectsCnt);
+        return;
+    }
+    if (encodeStatus == H264EncodeStatus::Error) {
         recorder->_h264EncoderFailures[displayIdx]++;
         int failureAction = osxrdp_encoder_failure_action(
             recorder->_h264EncoderFailures[displayIdx], 0);
@@ -1474,10 +1485,15 @@ void ScreenRecorderManager::HandleH264AnnexBRecordData(void* pixelBuffer,
             forceFull = true;
             dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
             annexB.clear();
-            encoded = recorder->_h264Encoder[displayIdx]->Encode(
+            encodeStatus = recorder->_h264Encoder[displayIdx]->Encode(
                 (CVPixelBufferRef)pixelBuffer, true, &annexB, &keyframe);
         }
-        if (!encoded) {
+        if (encodeStatus == H264EncodeStatus::Dropped) {
+            recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
+                                                      dirtyRects, dirtyRectsCnt);
+            return;
+        }
+        if (encodeStatus != H264EncodeStatus::Encoded) {
             recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
                                                       dirtyRects, dirtyRectsCnt);
             recorder->SendEncoderRuntimeFailure();

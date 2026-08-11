@@ -13,6 +13,7 @@
 // Captured send buffer
 static char g_capturedBuffer[4096];
 static int g_capturedLen = 0;
+static int g_sendResult = 0;
 
 // Stub: capture instead of actually sending
 extern "C" int xipc_send_data(xipc_t* ipc, const void* data, int len) {
@@ -20,7 +21,7 @@ extern "C" int xipc_send_data(xipc_t* ipc, const void* data, int len) {
     if (len > (int)sizeof(g_capturedBuffer)) len = (int)sizeof(g_capturedBuffer);
     memcpy(g_capturedBuffer, data, len);
     g_capturedLen = len;
-    return 0;
+    return g_sendResult;
 }
 
 static int32_t read_int32_at(int offset) {
@@ -165,6 +166,17 @@ TEST_CASE(test_send_record_start_clamps_monitor_count) {
     EXPECT_EQ_INT(read_int32_at(36 + 16 * 20), OSXRDP_STREAM_POLICY_VERSION);
 }
 
+TEST_CASE(test_send_record_start_propagates_enqueue_failure) {
+    Command cmd;
+    xipc_t dummyIpc = {};
+    g_capturedLen = 0;
+    g_sendResult = -1;
+    EXPECT_TRUE(!cmd.SendRecordStartMsg(
+        &dummyIpc, 1920, 1080, 60, 0, 0, 0, NULL,
+        OSXRDP_STREAM_POLICY_VERSION, OSXRDP_STREAM_QUALITY_HIGH));
+    g_sendResult = 0;
+}
+
 int main(void) {
     RUN_TEST(test_send_record_stop_msg);
     RUN_TEST(test_send_mouse_input_msg);
@@ -173,5 +185,6 @@ int main(void) {
     RUN_TEST(test_send_screen_resize_msg_odd_dimensions);
     RUN_TEST(test_send_screen_resize_msg_with_monitors);
     RUN_TEST(test_send_record_start_clamps_monitor_count);
+    RUN_TEST(test_send_record_start_propagates_enqueue_failure);
     return test_main_finish("test_command_packing");
 }

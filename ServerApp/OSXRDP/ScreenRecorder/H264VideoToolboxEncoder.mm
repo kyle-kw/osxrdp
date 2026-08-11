@@ -10,6 +10,7 @@ namespace {
 struct EncodeResult {
     OSStatus status;
     bool completed;
+    bool dropped;
     bool keyframe;
     std::vector<uint8_t> bytes;
 };
@@ -163,6 +164,13 @@ bool OSXRDPConvertAVCCToAnnexB(const uint8_t* avcc, size_t avccSize,
     return offset == avccSize;
 }
 
+H264EncodeStatus OSXRDPClassifyH264EncodeResult(OSStatus status, bool completed,
+                                                bool dropped, size_t outputSize) {
+    if (status != noErr || !completed) return H264EncodeStatus::Error;
+    if (dropped) return H264EncodeStatus::Dropped;
+    return outputSize > 0 ? H264EncodeStatus::Encoded : H264EncodeStatus::Error;
+}
+
 H264VideoToolboxEncoder::H264VideoToolboxEncoder() :
     _session(NULL), _activeResult(NULL), _width(0), _height(0), _alignedWidth(0),
     _alignedHeight(0), _framerate(0), _frameNumber(0) {}
@@ -183,7 +191,8 @@ void H264VideoToolboxEncoder::CompressionOutputCallback(
     if (result == NULL) return;
     result->completed = true;
     result->status = status;
-    if (status != noErr || (infoFlags & kVTEncodeInfo_FrameDropped) != 0 ||
+    result->dropped = (infoFlags & kVTEncodeInfo_FrameDropped) != 0;
+    if (status != noErr || result->dropped ||
         sampleBuffer == NULL || !CMSampleBufferDataIsReady(sampleBuffer)) {
         return;
     }
@@ -270,20 +279,23 @@ bool H264VideoToolboxEncoder::Initialize(int width, int height, int framerate,
     return true;
 }
 
-bool H264VideoToolboxEncoder::Encode(CVPixelBufferRef source, bool forceKeyframe,
-                                     std::vector<uint8_t>* annexB, bool* isKeyframe) {
+H264EncodeStatus H264VideoToolboxEncoder::Encode(
+        CVPixelBufferRef source, bool forceKeyframe,
+        std::vector<uint8_t>* annexB, bool* isKeyframe) {
     VTCompressionSessionRef session = (VTCompressionSessionRef)_session;
     if (session == NULL || source == NULL || annexB == NULL || isKeyframe == NULL ||
         CVPixelBufferGetWidth(source) != (size_t)_width ||
-        CVPixelBufferGetHeight(source) != (size_t)_height) return false;
+        CVPixelBufferGetHeight(source) != (size_t)_height) {
+        return H264EncodeStatus::Error;
+    }
 
     CVPixelBufferRef input = CreateAlignedPixelBuffer(source, _width, _height,
                                                        _alignedWidth, _alignedHeight);
-    if (input == NULL) return false;
-    EncodeResult result = { noErr, false, false, {} };
+    if (input == NULL) return H264EncodeStatus::Error;
+    EncodeResult result = { noErr, false, false, false, {} };
     if (_activeResult != NULL) {
         CVPixelBufferRelease(input);
-        return false;
+        return H264EncodeStatus::Error;
     }
     _activeResult = &result;
     CFDictionaryRef frameProperties = NULL;
@@ -305,13 +317,13 @@ bool H264VideoToolboxEncoder::Encode(CVPixelBufferRef source, bool forceKeyframe
         Invalidate();
     }
     _activeResult = NULL;
-    if (status != noErr || completeStatus != noErr || !result.completed ||
-        result.status != noErr || result.bytes.empty()) {
-        return false;
-    }
+    if (status != noErr || completeStatus != noErr) return H264EncodeStatus::Error;
+    H264EncodeStatus resultStatus = OSXRDPClassifyH264EncodeResult(
+        result.status, result.completed, result.dropped, result.bytes.size());
+    if (resultStatus != H264EncodeStatus::Encoded) return resultStatus;
     annexB->swap(result.bytes);
     *isKeyframe = result.keyframe;
-    return true;
+    return H264EncodeStatus::Encoded;
 }
 
 void H264VideoToolboxEncoder::Invalidate() {

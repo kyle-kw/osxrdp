@@ -513,17 +513,24 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     _statusManager.SetAgentConnected(isLockScreen);
     
     // Request screen recording data
+    bool requestSent = false;
     if (_mod->client_info.display_sizes.monitorCount == 0) {
-        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, _streamPolicy.framerate,
-                                    _recordFormat, _mod->usevirtualmon, 0, 0,
-                                    OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
+        requestSent = _command.SendRecordStartMsg(
+            ipc, _mod->width, _mod->height, _streamPolicy.framerate,
+            _recordFormat, _mod->usevirtualmon, 0, 0,
+            OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
     }
     else {
-        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, _streamPolicy.framerate,
-                                    _recordFormat, _mod->usevirtualmon,
-                                    _mod->client_info.display_sizes.monitorCount,
-                                    (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm,
-                                    OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
+        requestSent = _command.SendRecordStartMsg(
+            ipc, _mod->width, _mod->height, _streamPolicy.framerate,
+            _recordFormat, _mod->usevirtualmon,
+            _mod->client_info.display_sizes.monitorCount,
+            (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm,
+            OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
+    }
+    if (!requestSent) {
+        xipc_destroy(ipc);
+        return false;
     }
     
     
@@ -556,18 +563,22 @@ bool ConnectionManager::_RequestOpenH264Fallback(xipc_t* ipc, int errorCode) {
          errorCode != OSXRDP_SCREEN_ERROR_ENCODER_RUNTIME)) {
         return false;
     }
-    _encoderFallback = true;
-    _recordFormat = OSXRDP_RECORDFORMAT_NV12_PACKED;
-    _mod->server_msg((struct mod*)_mod,
-        "VideoToolbox is unavailable. Retrying with OpenH264 fallback; bitrate is not guaranteed.", 0);
+    const int fallbackFormat = OSXRDP_RECORDFORMAT_NV12_PACKED;
     int monitorCount = _mod->client_info.display_sizes.monitorCount;
     struct monitor_info* monitorInfo =
         (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm;
-    return _command.SendRecordStartMsg(ipc, _mod->width, _mod->height,
-        _streamPolicy.framerate, _recordFormat, _mod->usevirtualmon,
+    if (!_command.SendRecordStartMsg(ipc, _mod->width, _mod->height,
+        _streamPolicy.framerate, fallbackFormat, _mod->usevirtualmon,
         monitorCount, monitorCount > 0 ? monitorInfo : NULL,
         OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset,
-        OSXRDP_PACKETTYPE_REQ_SCREENRECONFIGURE);
+        OSXRDP_PACKETTYPE_REQ_SCREENRECONFIGURE)) {
+        return false;
+    }
+    _encoderFallback = true;
+    _recordFormat = fallbackFormat;
+    _mod->server_msg((struct mod*)_mod,
+        "VideoToolbox is unavailable. Retrying with OpenH264 fallback; bitrate is not guaranteed.", 0);
+    return true;
 }
 
 void ConnectionManager::_HandleSessionMessage(int sessionId, int isLockScreen) {

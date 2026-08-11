@@ -42,6 +42,17 @@ TEST_CASE(avcc_conversion_preserves_nal_order) {
     EXPECT_TRUE(memcmp(output.data(), expected, sizeof(expected)) == 0);
 }
 
+TEST_CASE(videotoolbox_frame_drop_is_not_an_encoder_error) {
+    EXPECT_TRUE(OSXRDPClassifyH264EncodeResult(
+        noErr, true, true, 0) == H264EncodeStatus::Dropped);
+    EXPECT_TRUE(OSXRDPClassifyH264EncodeResult(
+        noErr, true, false, 128) == H264EncodeStatus::Encoded);
+    EXPECT_TRUE(OSXRDPClassifyH264EncodeResult(
+        noErr, true, false, 0) == H264EncodeStatus::Error);
+    EXPECT_TRUE(OSXRDPClassifyH264EncodeResult(
+        kVTVideoEncoderMalfunctionErr, true, true, 0) == H264EncodeStatus::Error);
+}
+
 TEST_CASE(videotoolbox_encodes_ordered_annexb_baseline_stream) {
     CVPixelBufferRef pixel = NULL;
     CVReturn createResult = CVPixelBufferCreate(kCFAllocatorDefault, 64, 64,
@@ -64,10 +75,11 @@ TEST_CASE(videotoolbox_encodes_ordered_annexb_baseline_stream) {
                CVPixelBufferGetBytesPerRowOfPlane(pixel, 1) * 32);
         std::vector<uint8_t> output;
         bool keyframe = false;
-        bool encoded = encoder.Encode(pixel, frame == 0, &output, &keyframe);
+        H264EncodeStatus encodeStatus = encoder.Encode(
+            pixel, frame == 0, &output, &keyframe);
         CVPixelBufferUnlockBaseAddress(pixel, 0);
-        EXPECT_TRUE(encoded);
-        if (!encoded) break;
+        EXPECT_TRUE(encodeStatus == H264EncodeStatus::Encoded);
+        if (encodeStatus != H264EncodeStatus::Encoded) break;
         EXPECT_TRUE(output.size() > 4);
         EXPECT_TRUE(output[0] == 0 && output[1] == 0 && output[2] == 0 && output[3] == 1);
         if (frame == 0) {
@@ -85,6 +97,7 @@ TEST_CASE(videotoolbox_encodes_ordered_annexb_baseline_stream) {
 int main(void) {
     RUN_TEST(avcc_conversion_rejects_malformed_nals);
     RUN_TEST(avcc_conversion_preserves_nal_order);
+    RUN_TEST(videotoolbox_frame_drop_is_not_an_encoder_error);
     RUN_TEST(videotoolbox_encodes_ordered_annexb_baseline_stream);
     return test_main_finish("test_h264_videotoolbox");
 }

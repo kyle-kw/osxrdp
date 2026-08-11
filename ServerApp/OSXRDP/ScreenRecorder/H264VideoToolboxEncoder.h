@@ -13,6 +13,17 @@ bool OSXRDPConvertAVCCToAnnexB(const uint8_t* avcc, size_t avccSize,
                                size_t nalLengthBytes,
                                std::vector<uint8_t>* annexB);
 
+enum class H264EncodeStatus {
+    Error,
+    Encoded,
+    Dropped,
+};
+
+// Classifies the callback result. A VideoToolbox frame drop is an informational
+// outcome, not an encoder failure, and must not trigger session recreation.
+H264EncodeStatus OSXRDPClassifyH264EncodeResult(OSStatus status, bool completed,
+                                                bool dropped, size_t outputSize);
+
 class H264VideoToolboxEncoder {
 public:
     H264VideoToolboxEncoder();
@@ -21,8 +32,8 @@ public:
     bool Initialize(int width, int height, int framerate,
                     int targetBitrate, int maximumBitrate,
                     int keyframeIntervalSeconds);
-    bool Encode(CVPixelBufferRef source, bool forceKeyframe,
-                std::vector<uint8_t>* annexB, bool* isKeyframe);
+    H264EncodeStatus Encode(CVPixelBufferRef source, bool forceKeyframe,
+                            std::vector<uint8_t>* annexB, bool* isKeyframe);
     void Invalidate();
 
 private:

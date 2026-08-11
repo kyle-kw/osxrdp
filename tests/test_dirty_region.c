@@ -1,5 +1,6 @@
 #include "harness.h"
 #include "osxrdp/dirty_region.h"
+#include <limits.h>
 
 TEST_CASE(empty_addition_does_not_create_full_frame) {
     struct RECT rects[MAX_DIRTY_COUNT] = {{0}};
@@ -44,9 +45,22 @@ TEST_CASE(tile_result_overflow_collapses_to_one_bounding_rect) {
     EXPECT_EQ_INT(rects[0].height, 1280);
 }
 
+TEST_CASE(append_capacity_check_does_not_overflow) {
+    struct RECT rects[MAX_DIRTY_COUNT] = {{0}};
+    struct RECT addition = {0, 0, 1, 1};
+    int count = 1;
+    // The oversized canvas makes the raster fallback reject before it needs to
+    // inspect additions. The old signed sum entered memcpy with INT_MAX items.
+    EXPECT_EQ_INT(osxrdp_dirty_region_merge(
+        rects, &count, &addition, INT_MAX, 640001, 64),
+        OSXRDP_DIRTY_MERGE_FULL);
+    EXPECT_EQ_INT(count, 0);
+}
+
 int main(void) {
     RUN_TEST(empty_addition_does_not_create_full_frame);
     RUN_TEST(overflow_rasterizes_and_merges_adjacent_tiles);
     RUN_TEST(tile_result_overflow_collapses_to_one_bounding_rect);
+    RUN_TEST(append_capacity_check_does_not_overflow);
     return test_main_finish("test_dirty_region");
 }

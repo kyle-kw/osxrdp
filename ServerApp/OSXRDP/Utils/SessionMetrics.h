@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <time.h>
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -68,6 +69,7 @@ void SessionMetricsGetStreamingSnapshot(int * _Nullable preset,
                                         uint64_t * _Nullable throttledSkips,
                                         uint64_t * _Nullable keyframes,
                                         uint64_t * _Nullable encoderFallbacks);
+int SessionMetricsBitrateBucketForSecond(time_t second);
 
 #ifdef __cplusplus
 }

@@ -206,6 +206,9 @@ build_and_run test_dirty_region \
   "$ROOT/tests/test_dirty_region.c" \
   "$ROOT/ScreenMirrorLib/osxrdp/dirty_region.c"
 
+build_and_run test_screenrecord_shm \
+  "$ROOT/tests/test_screenrecord_shm.c"
+
 if [[ "${RUN_TSAN:-0}" == "1" ]]; then
   echo ""
   echo "-- building test_ipc (Thread Sanitizer) --"
@@ -254,6 +257,10 @@ build_and_run_objc test_h264_videotoolbox \
   -framework VideoToolbox \
   -framework CoreMedia \
   -framework CoreVideo
+
+build_and_run_objc test_session_metrics \
+  "$ROOT/tests/test_session_metrics.mm" \
+  "$ROOT/ServerApp/OSXRDP/Utils/SessionMetrics.mm"
 
 echo ""
 echo "-- test_strings.sh --"

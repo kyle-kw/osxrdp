@@ -62,10 +62,10 @@ bool Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int fr
     xstream_writeInt32(stream, policyVersion);
     xstream_writeInt32(stream, preset);
     
-    _SendMsg(agentIpc, stream);
+    bool sent = _SendMsg(agentIpc, stream);
 
     xstream_free(stream);
-    return true;
+    return sent;
 }
 
 void Command::SendRecordStopMsg(xipc_t* agentIpc) {
@@ -143,10 +143,10 @@ bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int f
     xstream_writeInt32(stream, policyVersion);
     xstream_writeInt32(stream, preset);
 
-    _SendMsg(agentIpc, stream);
+    bool sent = _SendMsg(agentIpc, stream);
 
     xstream_free(stream);
-    return true;
+    return sent;
 }
 
 void Command::SendMouseInputMsg(xipc_t* agentIpc, int inputType, short x, short y) {
@@ -244,16 +244,16 @@ void Command::SendClipboardMsg(xipc_t* agentIpc, int channelId, int channelFlags
     xstream_free(stream);
 }
 
-void Command::_SendMsg(xipc_t* ipc, xstream_t* stream) {
+bool Command::_SendMsg(xipc_t* ipc, xstream_t* stream) {
     if (ipc == NULL || stream == NULL) {
-        return;
+        return false;
     }
     
     int bufferLen = 0;
     const void* buffer = xstream_get_raw_buffer(stream, &bufferLen);
     if (buffer == NULL || bufferLen <= 0 || bufferLen >= MAX_BUFFER) {
-        return;
+        return false;
     }
 
-    xipc_send_data(ipc, buffer, bufferLen);
+    return xipc_send_data(ipc, buffer, bufferLen) >= 0;
 }

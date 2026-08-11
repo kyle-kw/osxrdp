@@ -55,7 +55,7 @@ jobs:
 
       - name: Build unsigned package
         env:
-          VERSION: "3.2.0"
+          VERSION: "3.2.1"
           ARCHS: "arm64"
         run: bash package/build_unsigned.sh
 

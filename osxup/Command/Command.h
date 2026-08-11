@@ -5,6 +5,7 @@
 
 #include "ipc.h"
 #include "xstream.h"
+#include "osxrdp/packet.h"
 #include "../xrdp/xrdp_client_info.h"
 
 class Command {
@@ -14,7 +15,7 @@ public:
     bool SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int framerate,
                             int recordFormat, int useVirtualmon, int monitorCount,
                             struct monitor_info* monitorInfo, int policyVersion, int preset,
-                            int packetType = 1);
+                            int packetType = OSXRDP_PACKETTYPE_REQ_SCREEN);
     void SendRecordStopMsg(xipc_t* agentIpc);
     // Returns false if the message could not be allocated/sent.
     bool SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int framerate,
@@ -31,7 +32,7 @@ public:
     
 private:
     
-    void _SendMsg(xipc_t* ipc, xstream_t* stream);
+    bool _SendMsg(xipc_t* ipc, xstream_t* stream);
 };
 
 #endif
