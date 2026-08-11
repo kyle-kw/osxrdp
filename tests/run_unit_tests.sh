@@ -232,6 +232,9 @@ build_and_run_cxx test_input_mapping \
   -framework ApplicationServices \
   -framework Carbon
 
+build_and_run test_input_source_selection \
+  "$ROOT/tests/test_input_source_selection.c"
+
 build_and_run_objc test_inset_card_view \
   "$ROOT/tests/test_inset_card_view.mm" \
   "$ROOT/ServerApp/OSXRDP/UI/InsetCardView.m" \
