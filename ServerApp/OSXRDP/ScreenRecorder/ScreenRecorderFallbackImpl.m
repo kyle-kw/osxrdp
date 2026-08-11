@@ -1,5 +1,6 @@
 #import "ScreenRecorderFallbackImpl.h"
 #include "osxrdp/packet.h"
+#include <limits.h>
 #include <stdatomic.h>
 
 @implementation ScreenRecorderFallbackImpl {
@@ -70,7 +71,7 @@
         }
         else if (status == kCGDisplayStreamFrameStatusStopped) {
             // Recording status callback (only terminate for unintentional stop)
-            if (!_intentionalStop) {
+            if (!self->_intentionalStop) {
                 [self processStreamStopped];
             }
         }
@@ -80,7 +81,9 @@
     _recordQue = dispatch_queue_create("osxrdp.fallback_record", attr);
     
     int format = kCVPixelFormatType_32BGRA; // Standard bitmap
-    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED || recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
+    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED ||
+        recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED ||
+        recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
         format = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange; // h264
     }
     else if (recordFormat == OSXRDP_RECORDFORMAT_RFX) {
@@ -162,13 +165,20 @@
     }
     
     // Get dirty rects
-    size_t dirtyRectsCnt= 0;
-    const CGRect* dirtyRects = CGDisplayStreamUpdateGetRects(updateRef, kCGDisplayStreamUpdateDirtyRects, &dirtyRectsCnt);
+    size_t dirtyRectsCnt = 0;
+    const CGRect* dirtyRects = updateRef == NULL ? NULL
+        : CGDisplayStreamUpdateGetRects(updateRef, kCGDisplayStreamUpdateDirtyRects,
+                                        &dirtyRectsCnt);
+    int callbackDirtyCount = (updateRef == NULL ||
+                              dirtyRectsCnt > INT_MAX ||
+                              (dirtyRectsCnt > 0 && dirtyRects == NULL))
+        ? OSXRDP_DIRTY_RECTS_FULL : (int)dirtyRectsCnt;
     CVPixelBufferLockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);
     
     // Deliver recording callback
     if (atomic_load_explicit(&_callbacksEnabled, memory_order_acquire)) {
-        _recordCb(pixelBuffer, dirtyRects, (int)dirtyRectsCnt, _recordCbUserData, _displayIdx);
+        _recordCb(pixelBuffer, dirtyRects, callbackDirtyCount,
+                  _recordCbUserData, _displayIdx);
     }
     
     CVPixelBufferUnlockBaseAddress(pixelBuffer, kCVPixelBufferLock_ReadOnly);

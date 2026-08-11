@@ -1,13 +1,17 @@
 #import "SessionMetrics.h"
 #import "osxrdp/packet.h"
+#import "osxrdp/stream_policy.h"
 #include <string.h>
+#include <time.h>
 
 // Single source of truth for recordFormat → display name (ObjC + C bridge).
-static const char *CodecNameForRecordFormat(int fmt) {
+static const char *CodecNameForRecordFormat(int fmt, int preset) {
     switch (fmt) {
         case OSXRDP_RECORDFORMAT_NV12_PACKED:
         case OSXRDP_RECORDFORMAT_NV12_ALIGNED:
-            return "H.264";
+            return preset == OSXRDP_STREAM_QUALITY_HIGH ? "OpenH264" : "OpenH264 fallback";
+        case OSXRDP_RECORDFORMAT_H264_ANNEXB:
+            return "VideoToolbox H.264";
         case OSXRDP_RECORDFORMAT_RFX:
             return "RFX";
         case OSXRDP_RECORDFORMAT_BGRA32:
@@ -17,6 +21,15 @@ static const char *CodecNameForRecordFormat(int fmt) {
     }
 }
 
+@interface SessionMetrics ()
+- (void)copyStreamingPreset:(int *)preset encodedBytes:(uint64_t *)encodedBytes
+        recentBitsPerSecond:(uint64_t *)recentBitsPerSecond
+              noChangeSkips:(uint64_t *)noChangeSkips
+             throttledSkips:(uint64_t *)throttledSkips
+                 keyframes:(uint64_t *)keyframes
+          encoderFallbacks:(uint64_t *)encoderFallbacks;
+@end
+
 @implementation SessionMetrics {
     dispatch_queue_t _queue;
     int _activeDisplayCount;
@@ -24,6 +37,7 @@ static const char *CodecNameForRecordFormat(int fmt) {
     int _currentHeight;
     int _currentFramerate;
     int _currentRecordFormat;
+    int _currentPreset;
     unsigned int _writePos;
     unsigned int _readPos;
     uint64_t _totalFramesWritten;
@@ -31,6 +45,13 @@ static const char *CodecNameForRecordFormat(int fmt) {
     uint64_t _copyFailures;
     uint64_t _rfxFullRedrawRequests;
     uint64_t _imeTimeouts;
+    uint64_t _encodedScreenBytes;
+    uint64_t _noChangeSkips;
+    uint64_t _throttledSkips;
+    uint64_t _keyframes;
+    uint64_t _encoderFallbacks;
+    uint64_t _bitrateBytes[5];
+    time_t _bitrateSeconds[5];
 }
 
 + (instancetype)shared {
@@ -51,6 +72,7 @@ static const char *CodecNameForRecordFormat(int fmt) {
         _currentHeight = 0;
         _currentFramerate = 0;
         _currentRecordFormat = -1;
+        _currentPreset = OSXRDP_STREAM_QUALITY_DEFAULT;
         _writePos = 0;
         _readPos = 0;
         _totalFramesWritten = 0;
@@ -58,37 +80,56 @@ static const char *CodecNameForRecordFormat(int fmt) {
         _copyFailures = 0;
         _rfxFullRedrawRequests = 0;
         _imeTimeouts = 0;
+        memset(_bitrateBytes, 0, sizeof(_bitrateBytes));
+        memset(_bitrateSeconds, 0, sizeof(_bitrateSeconds));
     }
     return self;
 }
 
 - (void)recordCopyFailure {
-    dispatch_async(_queue, ^{ _copyFailures++; });
+    dispatch_async(_queue, ^{ self->_copyFailures++; });
 }
 
 - (void)recordRFXFullRedrawRequest {
-    dispatch_async(_queue, ^{ _rfxFullRedrawRequests++; });
+    dispatch_async(_queue, ^{ self->_rfxFullRedrawRequests++; });
 }
 
 - (void)recordIMETimeout {
-    dispatch_async(_queue, ^{ _imeTimeouts++; });
+    dispatch_async(_queue, ^{ self->_imeTimeouts++; });
 }
+
+- (void)recordEncodedBytes:(size_t)bytes keyframe:(BOOL)keyframe {
+    dispatch_async(_queue, ^{
+        self->_encodedScreenBytes += bytes;
+        if (keyframe) self->_keyframes++;
+        time_t second = time(NULL);
+        int bucket = (int)(second % 5);
+        if (self->_bitrateSeconds[bucket] != second) {
+            self->_bitrateSeconds[bucket] = second;
+            self->_bitrateBytes[bucket] = 0;
+        }
+        self->_bitrateBytes[bucket] += bytes;
+    });
+}
+
+- (void)recordNoChangeSkip { dispatch_async(_queue, ^{ self->_noChangeSkips++; }); }
+- (void)recordThrottledSkip { dispatch_async(_queue, ^{ self->_throttledSkips++; }); }
 
 - (void)recordCommit:(int)displayIdx writePos:(unsigned int)writePos readPos:(unsigned int)readPos {
     (void)displayIdx;
     dispatch_async(_queue, ^{
-        _totalFramesWritten++;
-        _writePos = writePos;
-        _readPos = readPos;
+        self->_totalFramesWritten++;
+        self->_writePos = writePos;
+        self->_readPos = readPos;
     });
 }
 
 - (void)recordDrop:(int)displayIdx writePos:(unsigned int)writePos readPos:(unsigned int)readPos {
     (void)displayIdx;
     dispatch_async(_queue, ^{
-        _droppedFrames++;
-        _writePos = writePos;
-        _readPos = readPos;
+        self->_droppedFrames++;
+        self->_writePos = writePos;
+        self->_readPos = readPos;
     });
 }
 
@@ -97,33 +138,48 @@ static const char *CodecNameForRecordFormat(int fmt) {
                         height:(int)height
                       framerate:(int)framerate
                    recordFormat:(int)recordFormat
+                         preset:(int)preset
                         writePos:(unsigned int)writePos
                          readPos:(unsigned int)readPos {
     dispatch_async(_queue, ^{
-        _activeDisplayCount = displayCount;
-        _currentWidth = width;
-        _currentHeight = height;
-        _currentFramerate = framerate;
-        _currentRecordFormat = recordFormat;
-        _writePos = writePos;
-        _readPos = readPos;
+        self->_activeDisplayCount = displayCount;
+        self->_currentWidth = width;
+        self->_currentHeight = height;
+        self->_currentFramerate = framerate;
+        self->_currentRecordFormat = recordFormat;
+        self->_currentPreset = osxrdp_stream_quality_is_valid(preset)
+            ? preset : OSXRDP_STREAM_QUALITY_DEFAULT;
+        if (self->_currentPreset != OSXRDP_STREAM_QUALITY_HIGH &&
+            recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED) {
+            self->_encoderFallbacks++;
+        }
+        self->_writePos = writePos;
+        self->_readPos = readPos;
     });
 }
 
 - (void)reset {
     dispatch_async(_queue, ^{
-        _activeDisplayCount = 0;
-        _currentWidth = 0;
-        _currentHeight = 0;
-        _currentFramerate = 0;
-        _currentRecordFormat = -1;
-        _writePos = 0;
-        _readPos = 0;
-        _totalFramesWritten = 0;
-        _droppedFrames = 0;
-        _copyFailures = 0;
-        _rfxFullRedrawRequests = 0;
-        _imeTimeouts = 0;
+        self->_activeDisplayCount = 0;
+        self->_currentWidth = 0;
+        self->_currentHeight = 0;
+        self->_currentFramerate = 0;
+        self->_currentRecordFormat = -1;
+        self->_currentPreset = OSXRDP_STREAM_QUALITY_DEFAULT;
+        self->_writePos = 0;
+        self->_readPos = 0;
+        self->_totalFramesWritten = 0;
+        self->_droppedFrames = 0;
+        self->_copyFailures = 0;
+        self->_rfxFullRedrawRequests = 0;
+        self->_imeTimeouts = 0;
+        self->_encodedScreenBytes = 0;
+        self->_noChangeSkips = 0;
+        self->_throttledSkips = 0;
+        self->_keyframes = 0;
+        self->_encoderFallbacks = 0;
+        memset(self->_bitrateBytes, 0, sizeof(self->_bitrateBytes));
+        memset(self->_bitrateSeconds, 0, sizeof(self->_bitrateSeconds));
     });
 }
 
@@ -156,7 +212,9 @@ static const char *CodecNameForRecordFormat(int fmt) {
 - (NSString *)currentCodec {
     __block int fmt = 0;
     dispatch_sync(_queue, ^{ fmt = _currentRecordFormat; });
-    const char *name = CodecNameForRecordFormat(fmt);
+    __block int preset = 0;
+    dispatch_sync(_queue, ^{ preset = _currentPreset; });
+    const char *name = CodecNameForRecordFormat(fmt, preset);
     return name[0] != '\0' ? [NSString stringWithUTF8String:name] : @"";
 }
 
@@ -208,7 +266,7 @@ static const char *CodecNameForRecordFormat(int fmt) {
                       copyFailures:(uint64_t *)copyFailures
              rfxFullRedrawRequests:(uint64_t *)rfxFullRedrawRequests
                        imeTimeouts:(uint64_t *)imeTimeouts {
-    __block int bDisplay = 0, bWidth = 0, bHeight = 0, bFps = 0, bFmt = -1;
+    __block int bDisplay = 0, bWidth = 0, bHeight = 0, bFps = 0, bFmt = -1, bPreset = 0;
     __block unsigned int bWrite = 0, bRead = 0;
     __block uint64_t bTotal = 0, bDropped = 0;
     __block uint64_t bCopyFailures = 0, bRFXRequests = 0, bIMETimeouts = 0;
@@ -220,6 +278,7 @@ static const char *CodecNameForRecordFormat(int fmt) {
         bHeight = _currentHeight;
         bFps = _currentFramerate;
         bFmt = _currentRecordFormat;
+        bPreset = _currentPreset;
         bWrite = _writePos;
         bRead = _readPos;
         bTotal = _totalFramesWritten;
@@ -241,10 +300,42 @@ static const char *CodecNameForRecordFormat(int fmt) {
     if (imeTimeouts) *imeTimeouts = bIMETimeouts;
 
     if (codecBuf != NULL && codecBufLen > 0) {
-        const char *name = CodecNameForRecordFormat(bFmt);
+        const char *name = CodecNameForRecordFormat(bFmt, bPreset);
         strncpy(codecBuf, name, codecBufLen - 1);
         codecBuf[codecBufLen - 1] = '\0';
     }
+}
+
+- (void)copyStreamingPreset:(int *)preset encodedBytes:(uint64_t *)encodedBytes
+        recentBitsPerSecond:(uint64_t *)recentBitsPerSecond
+              noChangeSkips:(uint64_t *)noChangeSkips
+           throttledSkips:(uint64_t *)throttledSkips
+                 keyframes:(uint64_t *)keyframes
+          encoderFallbacks:(uint64_t *)encoderFallbacks {
+    __block int bPreset = OSXRDP_STREAM_QUALITY_DEFAULT;
+    __block uint64_t bBytes = 0, bNoChange = 0, bThrottled = 0, bKeyframes = 0, bFallbacks = 0;
+    __block uint64_t bRecentBytes = 0;
+    dispatch_sync(_queue, ^{
+        bPreset = _currentPreset;
+        bBytes = _encodedScreenBytes;
+        bNoChange = _noChangeSkips;
+        bThrottled = _throttledSkips;
+        bKeyframes = _keyframes;
+        bFallbacks = _encoderFallbacks;
+        time_t now = time(NULL);
+        for (int i = 0; i < 5; ++i) {
+            if (now >= _bitrateSeconds[i] && now - _bitrateSeconds[i] < 5) {
+                bRecentBytes += _bitrateBytes[i];
+            }
+        }
+    });
+    if (preset) *preset = bPreset;
+    if (encodedBytes) *encodedBytes = bBytes;
+    if (recentBitsPerSecond) *recentBitsPerSecond = (bRecentBytes * 8) / 5;
+    if (noChangeSkips) *noChangeSkips = bNoChange;
+    if (throttledSkips) *throttledSkips = bThrottled;
+    if (keyframes) *keyframes = bKeyframes;
+    if (encoderFallbacks) *encoderFallbacks = bFallbacks;
 }
 
 @end
@@ -268,4 +359,19 @@ void SessionMetricsGetSnapshot(int *displayCount, int *width, int *height,
                                          copyFailures:copyFailures
                                 rfxFullRedrawRequests:rfxFullRedrawRequests
                                           imeTimeouts:imeTimeouts];
+}
+
+void SessionMetricsGetStreamingSnapshot(int *preset, uint64_t *encodedBytes,
+                                        uint64_t *recentBitsPerSecond,
+                                        uint64_t *noChangeSkips,
+                                        uint64_t *throttledSkips,
+                                        uint64_t *keyframes,
+                                        uint64_t *encoderFallbacks) {
+    [SessionMetrics.shared copyStreamingPreset:preset
+                                  encodedBytes:encodedBytes
+                           recentBitsPerSecond:recentBitsPerSecond
+                                 noChangeSkips:noChangeSkips
+                                throttledSkips:throttledSkips
+                                      keyframes:keyframes
+                               encoderFallbacks:encoderFallbacks];
 }

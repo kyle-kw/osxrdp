@@ -3,6 +3,8 @@
 #include "ConnectionManager.h"
 #include "osxrdp/packet.h"
 #include "utils.h"
+#include "UserIdentityResolver.h"
+#include "osxrdp/stream_policy.h"
 #include <time.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -33,6 +35,23 @@ inline long long NowMs() {
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
+
+const char* ScreenErrorMessage(int error) {
+    switch (error) {
+        case OSXRDP_SCREEN_ERROR_H264_UNSUPPORTED:
+            return "Screen recording failed: the client did not negotiate RDP GFX H.264.";
+        case OSXRDP_SCREEN_ERROR_MULTIMONITOR_UNSUPPORTED:
+            return "Screen recording failed: this streaming mode does not support multiple monitors.";
+        case OSXRDP_SCREEN_ERROR_VIDEOTOOLBOX_INITIALIZATION:
+            return "Screen recording failed: VideoToolbox could not initialize.";
+        case OSXRDP_SCREEN_ERROR_ENCODER_RUNTIME:
+            return "Screen recording failed: VideoToolbox stopped encoding.";
+        case OSXRDP_SCREEN_ERROR_UNKNOWN_POLICY:
+            return "Screen recording failed: the streaming policy version is unsupported.";
+        default:
+            return "Screen recording failed: the agent rejected the request.";
+    }
+}
 } // namespace
 
 ConnectionManager::ConnectionManager() :
@@ -42,13 +61,18 @@ ConnectionManager::ConnectionManager() :
     _sessionId(0),
     _targetUid((uid_t)-1),
     _mod(NULL),
+    _recordFormat(-1),
+    _encoderFallback(false),
+    _paintStarted(false),
     _lastFrameActivityMs(0),
     _pendingResizeWidth(0),
     _pendingResizeHeight(0),
     _pendingResizeMonitorCount(0),
     _resizeInProgress(false),
     _resizeStartedMs(0)
-{}
+{
+    osxrdp_stream_policy_resolve(OSXRDP_STREAM_QUALITY_DEFAULT, &_streamPolicy);
+}
 
 ConnectionManager::~ConnectionManager() {}
 
@@ -78,7 +102,8 @@ bool ConnectionManager::Connect(const mod* mod) {
         return false;
     }
     
-    if (PaintManager::CheckRecordFormat(mod) == -1) {
+    int negotiatedFormat = PaintManager::CheckRecordFormat(mod);
+    if (negotiatedFormat == -1) {
         // log
         return false;
     }
@@ -97,6 +122,29 @@ bool ConnectionManager::Connect(const mod* mod) {
         return false;
     }
     _targetUid = passwordEntry.pw_uid;
+
+    int preset = osxup_get_stream_quality_preset(mod->username);
+    osxrdp_stream_policy_resolve(preset, &_streamPolicy);
+    _recordFormat = negotiatedFormat;
+    _encoderFallback = false;
+    _paintStarted = false;
+    if (_streamPolicy.usesAgentH264) {
+        bool hasH264 = negotiatedFormat == OSXRDP_RECORDFORMAT_NV12_PACKED ||
+                       negotiatedFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED;
+        if (!hasH264) {
+            mod->server_msg((struct mod*)mod,
+                "The selected streaming quality requires an RDP GFX H.264 client.", 0);
+            return false;
+        }
+        if (mod->client_info.display_sizes.monitorCount > 1) {
+            mod->server_msg((struct mod*)mod,
+                "Hotspot and Extreme Saver modes do not support multiple monitors.", 0);
+            mod->server_msg((struct mod*)mod,
+                "Disable multiple monitors or select High Quality before reconnecting.", 0);
+            return false;
+        }
+        _recordFormat = OSXRDP_RECORDFORMAT_H264_ANNEXB;
+    }
     
     _mod = mod;
     _channelManager.Initialize(mod);
@@ -159,6 +207,7 @@ void ConnectionManager::Release() {
     _AbortResizeInProgress();
     
     _paintManager.Release();
+    _paintStarted = false;
     _channelManager.Release();
     
     _inited = false;
@@ -319,8 +368,11 @@ bool ConnectionManager::SendResolutionChange(int width, int height, int recordFo
 
     _resizeInProgress = true;
     _resizeStartedMs = NowMs();
-    if (_command.SendScreenResizeMsg(_agentIpc, width, height, recordFormat, useVirtualmon,
-                                     _pendingResizeMonitorCount, _pendingResizeMonitors) == false) {
+    (void)recordFormat;
+    if (_command.SendScreenResizeMsg(_agentIpc, width, height, _streamPolicy.framerate,
+                                     _recordFormat, useVirtualmon,
+                                     _pendingResizeMonitorCount, _pendingResizeMonitors,
+                                     OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset) == false) {
         _ClearResizeState();
         return false;
     }
@@ -462,10 +514,16 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
     
     // Request screen recording data
     if (_mod->client_info.display_sizes.monitorCount == 0) {
-        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, PaintManager::CheckRecordFormat(_mod), _mod->usevirtualmon, 0, 0);
+        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, _streamPolicy.framerate,
+                                    _recordFormat, _mod->usevirtualmon, 0, 0,
+                                    OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
     }
     else {
-        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, PaintManager::CheckRecordFormat(_mod), _mod->usevirtualmon, _mod->client_info.display_sizes.monitorCount, (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm);
+        _command.SendRecordStartMsg(ipc, _mod->width, _mod->height, _streamPolicy.framerate,
+                                    _recordFormat, _mod->usevirtualmon,
+                                    _mod->client_info.display_sizes.monitorCount,
+                                    (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm,
+                                    OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset);
     }
     
     
@@ -480,15 +538,36 @@ bool ConnectionManager::_ConnectToAgent(int sessionId, bool isLockScreen) {
 bool ConnectionManager::_PreparePaint() {
     
     bool inLockscreen = _statusManager.CheckInLockscreen();
-    if (_paintManager.Initialize(_mod, PaintManager::CheckRecordFormat(_mod), _sessionId, inLockscreen) == false) {
+    if (_paintManager.Initialize(_mod, _recordFormat, _sessionId, inLockscreen) == false) {
         // log
         
         return false;
     }
     
     _statusManager.SetAgentRecordStart(inLockscreen);
+    _paintStarted = true;
     
     return true;
+}
+
+bool ConnectionManager::_RequestOpenH264Fallback(xipc_t* ipc, int errorCode) {
+    if (ipc == NULL || _mod == NULL || !_streamPolicy.usesAgentH264 || _encoderFallback ||
+        (errorCode != OSXRDP_SCREEN_ERROR_VIDEOTOOLBOX_INITIALIZATION &&
+         errorCode != OSXRDP_SCREEN_ERROR_ENCODER_RUNTIME)) {
+        return false;
+    }
+    _encoderFallback = true;
+    _recordFormat = OSXRDP_RECORDFORMAT_NV12_PACKED;
+    _mod->server_msg((struct mod*)_mod,
+        "VideoToolbox is unavailable. Retrying with OpenH264 fallback; bitrate is not guaranteed.", 0);
+    int monitorCount = _mod->client_info.display_sizes.monitorCount;
+    struct monitor_info* monitorInfo =
+        (struct monitor_info*)_mod->client_info.display_sizes.minfo_wm;
+    return _command.SendRecordStartMsg(ipc, _mod->width, _mod->height,
+        _streamPolicy.framerate, _recordFormat, _mod->usevirtualmon,
+        monitorCount, monitorCount > 0 ? monitorInfo : NULL,
+        OSXRDP_STREAM_POLICY_VERSION, _streamPolicy.preset,
+        OSXRDP_PACKETTYPE_REQ_SCREENRECONFIGURE);
 }
 
 void ConnectionManager::_HandleSessionMessage(int sessionId, int isLockScreen) {
@@ -572,8 +651,38 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
             int packetType = xstream_readInt32(stream);
             if (packetType == OSXRDP_PACKETTYPE_REP_SCREEN) {
                 int re = xstream_readInt32(stream);
+                int error = xstream_getRemaining(stream) >= (int)sizeof(int)
+                    ? xstream_readInt32(stream) : OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+                if (re != 1 && _this->_RequestOpenH264Fallback(client, error)) {
+                    break;
+                }
                 if (re != 1 || _this->_PreparePaint() == false) {
+                    if (_this->_mod != NULL && _this->_mod->server_msg != NULL) {
+                        _this->_mod->server_msg((struct mod*)_this->_mod,
+                            ScreenErrorMessage(error), 0);
+                    }
                     // log
+                    _this->_statusManager.SetStopping();
+                }
+            }
+            else if (packetType == OSXRDP_PACKETTYPE_REP_SCREENRECONFIGURE) {
+                int re = xstream_readInt32(stream);
+                int error = xstream_getRemaining(stream) >= (int)sizeof(int)
+                    ? xstream_readInt32(stream) : OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+                if (re != 1 && _this->_RequestOpenH264Fallback(client, error)) {
+                    break;
+                }
+                bool ready = false;
+                if (re == 1) {
+                    ready = _this->_paintStarted
+                        ? _this->_paintManager.ReinitializeForResize(_this->_recordFormat)
+                        : _this->_PreparePaint();
+                }
+                if (!ready) {
+                    if (_this->_mod != NULL && _this->_mod->server_msg != NULL) {
+                        _this->_mod->server_msg((struct mod*)_this->_mod,
+                            ScreenErrorMessage(error), 0);
+                    }
                     _this->_statusManager.SetStopping();
                 }
             }
@@ -581,6 +690,8 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
                 int re = xstream_readInt32(stream);
                 int newWidth = xstream_readInt32(stream);
                 int newHeight = xstream_readInt32(stream);
+                int error = xstream_getRemaining(stream) >= (int)sizeof(int)
+                    ? xstream_readInt32(stream) : OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
 
                 if (re == 1) {
                     // Update mod dimensions
@@ -594,7 +705,7 @@ int ConnectionManager::_OnReceivedAgentManagerMessage(xipc_t* t, xipc_t* client,
                     }
                 }
                 else {
-                    _this->_mod->server_msg((struct mod*)_this->_mod, "Screen resize failed: agent rejected resize.", 0);
+                    _this->_mod->server_msg((struct mod*)_this->_mod, ScreenErrorMessage(error), 0);
                 }
 
                 // Complete the async resize handshake with xrdp

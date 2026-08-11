@@ -3,8 +3,7 @@
 static NSString *const kKeyMacNativeInputMappingEnabled = @"osxrdp.macNativeInputMappingEnabled";
 static NSString *const kKeyAutoLandFiles = @"osxrdp.autoLandFiles";
 static NSString *const kKeyAutoLandBookmark = @"osxrdp.autoLandFolderBookmark";
-static NSString *const kKeyMaxFramerate = @"osxrdp.maxFramerate";
-static NSString *const kKeyPreferredCodec = @"osxrdp.preferredCodec";
+static NSString *const kKeyStreamQualityPreset = @"osxrdp.streamQualityPreset";
 
 @implementation AppConfig {
     // Last security-scoped URL we started accessing (balanced on replace/dealloc).
@@ -24,8 +23,7 @@ static NSString *const kKeyPreferredCodec = @"osxrdp.preferredCodec";
     NSDictionary *defaults = @{
         kKeyMacNativeInputMappingEnabled: @YES,
         kKeyAutoLandFiles: @NO,
-        kKeyMaxFramerate: @0,
-        kKeyPreferredCodec: @"",
+        kKeyStreamQualityPreset: @(OSXRDP_STREAM_QUALITY_DEFAULT),
     };
     [[NSUserDefaults standardUserDefaults] registerDefaults:defaults];
 }
@@ -89,21 +87,21 @@ static NSString *const kKeyPreferredCodec = @"osxrdp.preferredCodec";
     [[NSUserDefaults standardUserDefaults] setObject:autoLandFolderBookmark forKey:kKeyAutoLandBookmark];
 }
 
-- (int)maxFramerate {
-    return (int)[[NSUserDefaults standardUserDefaults] integerForKey:kKeyMaxFramerate];
+- (osxrdp_stream_quality_preset_t)streamQualityPreset {
+    id value = [[NSUserDefaults standardUserDefaults] objectForKey:kKeyStreamQualityPreset];
+    if (![value isKindOfClass:NSNumber.class]) {
+        return OSXRDP_STREAM_QUALITY_DEFAULT;
+    }
+    int preset = [(NSNumber *)value intValue];
+    return osxrdp_stream_quality_is_valid(preset)
+        ? (osxrdp_stream_quality_preset_t)preset
+        : OSXRDP_STREAM_QUALITY_DEFAULT;
 }
 
-- (void)setMaxFramerate:(int)maxFramerate {
-    [[NSUserDefaults standardUserDefaults] setInteger:maxFramerate forKey:kKeyMaxFramerate];
-}
-
-- (NSString *)preferredCodec {
-    NSString *codec = [[NSUserDefaults standardUserDefaults] stringForKey:kKeyPreferredCodec];
-    return codec ?: @"";
-}
-
-- (void)setPreferredCodec:(NSString *)preferredCodec {
-    [[NSUserDefaults standardUserDefaults] setObject:preferredCodec ?: @"" forKey:kKeyPreferredCodec];
+- (void)setStreamQualityPreset:(osxrdp_stream_quality_preset_t)preset {
+    int value = osxrdp_stream_quality_is_valid((int)preset)
+        ? (int)preset : OSXRDP_STREAM_QUALITY_DEFAULT;
+    [[NSUserDefaults standardUserDefaults] setInteger:value forKey:kKeyStreamQualityPreset];
 }
 
 - (NSURL *)resolvedAutoLandFolderURL {

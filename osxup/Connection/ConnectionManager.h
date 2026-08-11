@@ -9,6 +9,7 @@
 
 #include <pthread.h>
 #include <sys/types.h>
+#include "osxrdp/stream_policy.h"
 
 struct mod;
 
@@ -69,6 +70,10 @@ private:
     int _sessionId;
     uid_t _targetUid;
     const mod* _mod;
+    osxrdp_stream_policy_t _streamPolicy;
+    int _recordFormat;
+    bool _encoderFallback;
+    bool _paintStarted;
     
     // Adaptive timeout: last frame activity timestamp (ms, monotonic)
     long long _lastFrameActivityMs;
@@ -94,6 +99,7 @@ private:
     bool _ConnectToSessionManager();
     bool _ConnectToAgent(int sessionId, bool isLockScreen);
     bool _PreparePaint();
+    bool _RequestOpenH264Fallback(xipc_t* ipc, int errorCode);
         
     void _HandleSessionMessage(int sessionId, int isLockScreen);
     

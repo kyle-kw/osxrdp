@@ -65,21 +65,26 @@ MaxFrameRate = 60.0
 
 [OpenH264.wan]
 # for FHD
-TargetBitrate = 14_000_000
-MaxBitrate =    18_000_000
+EnableFrameSkip = true
+TargetBitrate = 10_000_000
+MaxBitrate =    12_000_000
 
 [OpenH264.broadband_high]
-TargetBitrate = 10_000_000
-MaxBitrate =   14_000_000
+EnableFrameSkip = true
+TargetBitrate = 8_000_000
+MaxBitrate =   10_000_000
 
 [OpenH264.satellite]
-TargetBitrate = 7_000_000
-MaxBitrate =    10_000_000
-
-[OpenH264.broadband_low]
+EnableFrameSkip = true
 TargetBitrate = 4_000_000
 MaxBitrate =    6_000_000
 
+[OpenH264.broadband_low]
+EnableFrameSkip = true
+TargetBitrate = 1_600_000
+MaxBitrate =    1_800_000
+
 [OpenH264.modem]
-TargetBitrate = 2_000_000
-MaxBitrate =    3_500_000
+EnableFrameSkip = true
+TargetBitrate = 600_000
+MaxBitrate =    1_200_000

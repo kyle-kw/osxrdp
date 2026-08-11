@@ -19,17 +19,20 @@ NS_ASSUME_NONNULL_BEGIN
 @property (readonly) uint64_t copyFailures;
 @property (readonly) uint64_t rfxFullRedrawRequests;
 @property (readonly) uint64_t imeTimeouts;
-
 - (void)recordCommit:(int)displayIdx writePos:(unsigned int)writePos readPos:(unsigned int)readPos;
 - (void)recordDrop:(int)displayIdx writePos:(unsigned int)writePos readPos:(unsigned int)readPos;
 - (void)recordCopyFailure;
 - (void)recordRFXFullRedrawRequest;
 - (void)recordIMETimeout;
+- (void)recordEncodedBytes:(size_t)bytes keyframe:(BOOL)keyframe;
+- (void)recordNoChangeSkip;
+- (void)recordThrottledSkip;
 - (void)updateFromDisplayCount:(int)displayCount
                          width:(int)width
                         height:(int)height
                       framerate:(int)framerate
                    recordFormat:(int)recordFormat
+                         preset:(int)preset
                         writePos:(unsigned int)writePos
                          readPos:(unsigned int)readPos;
 
@@ -58,6 +61,13 @@ void SessionMetricsGetSnapshot(int * _Nullable displayCount,
                                uint64_t * _Nullable copyFailures,
                                uint64_t * _Nullable rfxFullRedrawRequests,
                                uint64_t * _Nullable imeTimeouts);
+void SessionMetricsGetStreamingSnapshot(int * _Nullable preset,
+                                        uint64_t * _Nullable encodedBytes,
+                                        uint64_t * _Nullable recentBitsPerSecond,
+                                        uint64_t * _Nullable noChangeSkips,
+                                        uint64_t * _Nullable throttledSkips,
+                                        uint64_t * _Nullable keyframes,
+                                        uint64_t * _Nullable encoderFallbacks);
 
 #ifdef __cplusplus
 }

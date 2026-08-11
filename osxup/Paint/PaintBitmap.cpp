@@ -35,7 +35,8 @@ bool PaintBitmap::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo
 
     int paintResult = 0;
         
-    if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
+    if (frameInfo->updateKind == OSXRDP_FRAME_UPDATE_DIRTY &&
+        frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
         struct xrdp_rect dirtys[MAX_DIRTY_COUNT];
         
         // Store dirty area info

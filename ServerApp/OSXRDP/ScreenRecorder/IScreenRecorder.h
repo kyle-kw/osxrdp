@@ -13,6 +13,9 @@
 typedef void (*on_record_data)(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
 typedef void (*on_record_cmd)(int cmd, void* userData);
 
+#define OSXRDP_DIRTY_RECTS_INVALID (-1)
+#define OSXRDP_DIRTY_RECTS_FULL    (-2)
+
 @protocol IScreenRecorder<NSObject>
 
 @required

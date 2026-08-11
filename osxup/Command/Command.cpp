@@ -6,14 +6,17 @@
 // Must stay under IPC body limit (MAX_BUFFER) after 6 int headers.
 static const int kMaxClipboardIpcPayload = 14 * 1024;
 
-void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, struct monitor_info* monitorInfo) {
+bool Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int framerate,
+                                 int recordFormat, int useVirtualmon, int monitorCount,
+                                 struct monitor_info* monitorInfo, int policyVersion, int preset,
+                                 int packetType) {
     assert(agentIpc != NULL);
     assert(width > 0);
     assert(height > 0);
 
     xstream_t* stream = xstream_create(1024);
     if (stream == NULL) {
-        return;
+        return false;
     }
     
     if (monitorCount < 0 || monitorInfo == NULL) {
@@ -24,11 +27,16 @@ void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int re
     }
 
     xstream_writeInt32(stream, OSXRDP_CMDTYPE_SCREEN);
-    xstream_writeInt32(stream, OSXRDP_PACKETTYPE_REQ_SCREEN);
+    if (packetType != OSXRDP_PACKETTYPE_REQ_SCREEN &&
+        packetType != OSXRDP_PACKETTYPE_REQ_SCREENRECONFIGURE) {
+        xstream_free(stream);
+        return false;
+    }
+    xstream_writeInt32(stream, packetType);
     xstream_writeInt32(stream, 0);              // display index etc. (unused)
     xstream_writeInt32(stream, width);          // width
     xstream_writeInt32(stream, height);         // height
-    xstream_writeInt32(stream, 60);             // fps (unused)
+    xstream_writeInt32(stream, framerate);
     xstream_writeInt32(stream, recordFormat);   // recordFormat (BGRA32, NV12, RFX)
     xstream_writeInt32(stream, useVirtualmon);  // use virtual monitor (0, 1)
     
@@ -51,10 +59,13 @@ void Command::SendRecordStartMsg(xipc_t* agentIpc, int width, int height, int re
             xstream_writeInt32(stream, monitorInfo[i].is_primary);
         }
     }
+    xstream_writeInt32(stream, policyVersion);
+    xstream_writeInt32(stream, preset);
     
     _SendMsg(agentIpc, stream);
 
     xstream_free(stream);
+    return true;
 }
 
 void Command::SendRecordStopMsg(xipc_t* agentIpc) {
@@ -73,7 +84,9 @@ void Command::SendRecordStopMsg(xipc_t* agentIpc) {
     xstream_free(stream);
 }
 
-bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int recordFormat, int useVirtualmon, int monitorCount, const struct monitor_info* monitorInfo) {
+bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int framerate,
+                                  int recordFormat, int useVirtualmon, int monitorCount,
+                                  const struct monitor_info* monitorInfo, int policyVersion, int preset) {
     if (agentIpc == NULL || width <= 0 || height <= 0) {
         return false;
     }
@@ -104,7 +117,7 @@ bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int r
     xstream_writeInt32(stream, 0);              // display index (unused)
     xstream_writeInt32(stream, width);
     xstream_writeInt32(stream, height);
-    xstream_writeInt32(stream, 60);             // fps (unused, agent recomputes)
+    xstream_writeInt32(stream, framerate);
     xstream_writeInt32(stream, recordFormat);
     xstream_writeInt32(stream, useVirtualmon);
 
@@ -127,6 +140,8 @@ bool Command::SendScreenResizeMsg(xipc_t* agentIpc, int width, int height, int r
             xstream_writeInt32(stream, monitorInfo[i].is_primary);
         }
     }
+    xstream_writeInt32(stream, policyVersion);
+    xstream_writeInt32(stream, preset);
 
     _SendMsg(agentIpc, stream);
 

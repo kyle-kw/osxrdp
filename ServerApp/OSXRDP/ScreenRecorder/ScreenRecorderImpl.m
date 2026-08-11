@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreMedia/CoreMedia.h>
 #include <stdatomic.h>
+#include <math.h>
 #include "osxrdp/packet.h"
 #include "osxrdp/screenrecordshm.h"
 
@@ -17,6 +18,7 @@
     void* _recordCmdCbUserData;
     int _displayIdx;
     _Atomic bool _callbacksEnabled;
+    BOOL _forceFullAfterInvalidFrame;
     
     CGRect _dirtyRectBuffer[MAX_DIRTY_COUNT];
 }
@@ -30,6 +32,7 @@
         _recordStream = nil;
         _recordCb = NULL;
         _recordCbUserData = NULL;
+        _forceFullAfterInvalidFrame = NO;
         atomic_store(&_callbacksEnabled, false);
     }
     
@@ -37,6 +40,88 @@
 }
 
 int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rects);
+
+static int CoalesceDirtyRectsToTiles(CFArrayRef dirtyArr, CGRect* rects) {
+    const int tileSize = 64;
+    CFIndex sourceCount = dirtyArr == NULL ? 0 : CFArrayGetCount(dirtyArr);
+    if (sourceCount <= 0 || rects == NULL) return 0;
+
+    CGRect bounds = CGRectNull;
+    for (CFIndex i = 0; i < sourceCount; ++i) {
+        CFTypeRef element = CFArrayGetValueAtIndex(dirtyArr, i);
+        CGRect rect;
+        if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID() ||
+            !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &rect)) {
+            return OSXRDP_DIRTY_RECTS_FULL;
+        }
+        rect = CGRectStandardize(rect);
+        if (!CGRectIsEmpty(rect)) bounds = CGRectIsNull(bounds) ? rect : CGRectUnion(bounds, rect);
+    }
+    if (CGRectIsNull(bounds) || CGRectIsEmpty(bounds)) return 0;
+
+    int minCol = MAX(0, (int)floor(CGRectGetMinX(bounds) / tileSize));
+    int minRow = MAX(0, (int)floor(CGRectGetMinY(bounds) / tileSize));
+    int maxCol = MAX(minCol + 1, (int)ceil(CGRectGetMaxX(bounds) / tileSize));
+    int maxRow = MAX(minRow + 1, (int)ceil(CGRectGetMaxY(bounds) / tileSize));
+    size_t columns = (size_t)(maxCol - minCol);
+    size_t rows = (size_t)(maxRow - minRow);
+    if (columns == 0 || rows == 0 || columns > SIZE_MAX / rows) {
+        rects[0] = bounds;
+        return 1;
+    }
+    uint8_t* tiles = (uint8_t*)calloc(columns * rows, 1);
+    if (tiles == NULL) {
+        rects[0] = bounds;
+        return 1;
+    }
+    for (CFIndex i = 0; i < sourceCount; ++i) {
+        CGRect rect;
+        CGRectMakeWithDictionaryRepresentation(
+            (CFDictionaryRef)CFArrayGetValueAtIndex(dirtyArr, i), &rect);
+        rect = CGRectStandardize(rect);
+        int left = MAX(minCol, (int)floor(CGRectGetMinX(rect) / tileSize));
+        int top = MAX(minRow, (int)floor(CGRectGetMinY(rect) / tileSize));
+        int right = MIN(maxCol, (int)ceil(CGRectGetMaxX(rect) / tileSize));
+        int bottom = MIN(maxRow, (int)ceil(CGRectGetMaxY(rect) / tileSize));
+        for (int row = top; row < bottom; ++row) {
+            for (int col = left; col < right; ++col) {
+                tiles[(size_t)(row - minRow) * columns + (size_t)(col - minCol)] = 1;
+            }
+        }
+    }
+
+    int outputCount = 0;
+    for (int row = minRow; row < maxRow; ++row) {
+        int col = minCol;
+        while (col < maxCol) {
+            while (col < maxCol && !tiles[(size_t)(row - minRow) * columns + (size_t)(col - minCol)]) ++col;
+            if (col >= maxCol) break;
+            int runStart = col;
+            while (col < maxCol && tiles[(size_t)(row - minRow) * columns + (size_t)(col - minCol)]) ++col;
+            CGFloat x = runStart * tileSize;
+            CGFloat width = (col - runStart) * tileSize;
+            bool merged = false;
+            for (int existing = 0; existing < outputCount; ++existing) {
+                if (rects[existing].origin.x == x && rects[existing].size.width == width &&
+                    CGRectGetMaxY(rects[existing]) == row * tileSize) {
+                    rects[existing].size.height += tileSize;
+                    merged = true;
+                    break;
+                }
+            }
+            if (!merged) {
+                if (outputCount >= MAX_DIRTY_COUNT) {
+                    free(tiles);
+                    rects[0] = bounds;
+                    return 1;
+                }
+                rects[outputCount++] = CGRectMake(x, row * tileSize, width, tileSize);
+            }
+        }
+    }
+    free(tiles);
+    return outputCount;
+}
 
 - (void)initializeWithDisplayId:(int)displayId
             DisplayIndex:(int)displayIdx
@@ -63,7 +148,9 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     
     //_recordConfig.colorSpaceName = kCGColorSpaceSRGB;
     
-    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED || recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
+    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED ||
+        recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED ||
+        recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
         // When using H.264
         _recordConfig.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange;
     }
@@ -204,8 +291,13 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
     
     // Extract dirty area info
     int dirtyAreaCnt = SetDirtyAreaInfoFromSampleBuffer(sampleBuffer, _dirtyRectBuffer);
-    if (dirtyAreaCnt < 0) {
+    if (dirtyAreaCnt == OSXRDP_DIRTY_RECTS_INVALID) {
+        _forceFullAfterInvalidFrame = YES;
         return;
+    }
+    if (_forceFullAfterInvalidFrame) {
+        dirtyAreaCnt = OSXRDP_DIRTY_RECTS_FULL;
+        _forceFullAfterInvalidFrame = NO;
     }
     
     // Extract ImageBuffer (same as CVPixelBufferRef)
@@ -260,39 +352,47 @@ int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rec
 }
 
 int SetDirtyAreaInfoFromSampleBuffer(CMSampleBufferRef sampleBuffer, CGRect* rects) {
+    if (sampleBuffer == NULL || rects == NULL) {
+        return OSXRDP_DIRTY_RECTS_FULL;
+    }
     CFArrayRef arr = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, false);
     if (arr == NULL || CFArrayGetCount(arr) == 0) {
-        return -1;
+        return OSXRDP_DIRTY_RECTS_FULL;
     }
 
-    CFDictionaryRef att = (CFDictionaryRef)CFArrayGetValueAtIndex(arr, 0);
-    if (att == NULL) {
-        return -1;
+    CFTypeRef attachment = CFArrayGetValueAtIndex(arr, 0);
+    if (attachment == NULL || CFGetTypeID(attachment) != CFDictionaryGetTypeID()) {
+        return OSXRDP_DIRTY_RECTS_FULL;
     }
+    CFDictionaryRef att = (CFDictionaryRef)attachment;
     
-    NSNumber* status = (__bridge NSNumber*)CFDictionaryGetValue(att, (__bridge CFStringRef)SCStreamFrameInfoStatus);
-    if (status == nil) {
-        return -1;
+    CFTypeRef statusValue = CFDictionaryGetValue(att, (__bridge CFStringRef)SCStreamFrameInfoStatus);
+    if (statusValue == NULL || CFGetTypeID(statusValue) != CFNumberGetTypeID()) {
+        return OSXRDP_DIRTY_RECTS_FULL;
     }
 
+    NSNumber* status = (__bridge NSNumber*)statusValue;
     SCFrameStatus frameStatus = (SCFrameStatus)status.integerValue;
     if (frameStatus != SCFrameStatusComplete) {
-        return -1;
+        return OSXRDP_DIRTY_RECTS_INVALID;
     }
 
-    CFArrayRef dirtyArr = (CFArrayRef)CFDictionaryGetValue(att, (__bridge CFStringRef)SCStreamFrameInfoDirtyRects);
-    if (dirtyArr == NULL) {
-        return 0;
+    CFTypeRef dirtyValue = CFDictionaryGetValue(att, (__bridge CFStringRef)SCStreamFrameInfoDirtyRects);
+    if (dirtyValue == NULL || CFGetTypeID(dirtyValue) != CFArrayGetTypeID()) {
+        return OSXRDP_DIRTY_RECTS_FULL;
     }
+    CFArrayRef dirtyArr = (CFArrayRef)dirtyValue;
     
     int dirtyAreaCnt = (int)CFArrayGetCount(dirtyArr);
-    if (dirtyAreaCnt > MAX_DIRTY_COUNT) return 0;
+    if (dirtyAreaCnt > MAX_DIRTY_COUNT) {
+        return CoalesceDirtyRectsToTiles(dirtyArr, rects);
+    }
     
     for (int i = 0; i < dirtyAreaCnt; i++) {
         CFTypeRef element = CFArrayGetValueAtIndex(dirtyArr, i);
         if (element == NULL || CFGetTypeID(element) != CFDictionaryGetTypeID() ||
             !CGRectMakeWithDictionaryRepresentation((CFDictionaryRef)element, &(rects[i]))) {
-            return 0;
+            return OSXRDP_DIRTY_RECTS_FULL;
         }
     }
     

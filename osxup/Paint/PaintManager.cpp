@@ -31,6 +31,7 @@ PaintManager::PaintManager() :
     _releasePending(false),
     _recordShmCnt(0),
     _sessionId(0),
+    _recordFormat(-1),
     _submittedFrameCount(0),
     _ackedFrameCount(0),
     _skippedFrameCount(0),
@@ -133,8 +134,10 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
         return false;
     }
     
-    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED || recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
-        _paint = new PaintH264();
+    if (recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED ||
+        recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED ||
+        recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
+        _paint = new PaintH264(recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB);
     }
     else if (recordFormat == OSXRDP_RECORDFORMAT_RFX) {
         _paint = new PaintRFX();
@@ -153,6 +156,7 @@ int PaintManager::Initialize(const struct mod* mod, int recordFormat, int sessio
     
     _mod = mod;
     _sessionId = sessionId;
+    _recordFormat = recordFormat;
     _isLockScreen = isLockScreen;
     _releasePending = false;
     _inFlightTracker.Reset();
@@ -194,11 +198,11 @@ bool PaintManager::TryReleaseForReconnect() {
     return true;
 }
 
-bool PaintManager::ReinitializeForResize() {
+bool PaintManager::ReinitializeForResize(int requestedRecordFormat) {
     const struct mod* savedMod = _mod;
     int savedSessionId = _sessionId;
     bool savedIsLockScreen = _isLockScreen;
-    int recordFormat = CheckRecordFormat(savedMod);
+    int recordFormat = requestedRecordFormat >= 0 ? requestedRecordFormat : _recordFormat;
 
     for (int attempt = 0; attempt < 3; attempt++) {
         ReleaseResources();
@@ -249,6 +253,7 @@ void PaintManager::ReleaseResources() {
     _lastCursorGeneration = 0;
     
     _mod = NULL;
+    _recordFormat = -1;
     _inFlightTracker.Reset();
     memset(_submittedFrameIds, 0, sizeof(_submittedFrameIds));
     memset(_submittedAtNanos, 0, sizeof(_submittedAtNanos));
@@ -410,6 +415,8 @@ bool PaintManager::GetPaintData(screenrecord_frame_t** outFrameInfo, char** outI
         return false;
 
     if (decision.forceFullDirty) {
+        frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+        frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
         frame->dirtyCount = 0;
     }
     if (decision.skippedFrames > 0) {

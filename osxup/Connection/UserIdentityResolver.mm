@@ -4,6 +4,7 @@
 #import <OpenDirectory/OpenDirectory.h>
 
 #include <string.h>
+#include "osxrdp/stream_policy.h"
 
 static NSString* osxup_normalize_username(NSString* username) {
     if (username == nil) {
@@ -112,5 +113,38 @@ int osxup_username_matches_canonical_case(const char* username, const char* cano
         }
 
         return [inputUsername isEqualToString:resolvedUsername] ? 1 : 0;
+    }
+}
+
+int osxup_get_stream_quality_preset(const char* canonicalUsername) {
+    if (canonicalUsername == NULL || canonicalUsername[0] == '\0') {
+        return OSXRDP_STREAM_QUALITY_DEFAULT;
+    }
+
+    @autoreleasepool {
+        NSString* username = [[NSString alloc] initWithUTF8String:canonicalUsername];
+        if (username == nil || username.length == 0) {
+            return OSXRDP_STREAM_QUALITY_DEFAULT;
+        }
+
+        CFPropertyListRef value = CFPreferencesCopyValue(
+            CFSTR("osxrdp.streamQualityPreset"),
+            CFSTR("com.byungho.osxrdp.mainapp"),
+            (__bridge CFStringRef)username,
+            kCFPreferencesAnyHost);
+        if (value == NULL) {
+            return OSXRDP_STREAM_QUALITY_DEFAULT;
+        }
+
+        int preset = OSXRDP_STREAM_QUALITY_DEFAULT;
+        if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+            int candidate = 0;
+            if (CFNumberGetValue((CFNumberRef)value, kCFNumberIntType, &candidate) &&
+                osxrdp_stream_quality_is_valid(candidate)) {
+                preset = candidate;
+            }
+        }
+        CFRelease(value);
+        return preset;
     }
 }

@@ -199,6 +199,13 @@ build_and_run test_session_protocol \
   -framework CoreFoundation \
   -framework CoreGraphics
 
+build_and_run test_stream_policy \
+  "$ROOT/tests/test_stream_policy.c"
+
+build_and_run test_dirty_region \
+  "$ROOT/tests/test_dirty_region.c" \
+  "$ROOT/ScreenMirrorLib/osxrdp/dirty_region.c"
+
 if [[ "${RUN_TSAN:-0}" == "1" ]]; then
   echo ""
   echo "-- building test_ipc (Thread Sanitizer) --"
@@ -240,6 +247,13 @@ build_and_run_objc test_inset_card_view \
 build_and_run_objc test_clip_protocol \
   "$ROOT/tests/test_clip_protocol.mm" \
   "$ROOT/ServerApp/OSXRDP/Clipboard/ClipProtocol.mm"
+
+build_and_run_objc test_h264_videotoolbox \
+  "$ROOT/tests/test_h264_videotoolbox.mm" \
+  "$ROOT/ServerApp/OSXRDP/ScreenRecorder/H264VideoToolboxEncoder.mm" \
+  -framework VideoToolbox \
+  -framework CoreMedia \
+  -framework CoreVideo
 
 echo ""
 echo "-- test_strings.sh --"

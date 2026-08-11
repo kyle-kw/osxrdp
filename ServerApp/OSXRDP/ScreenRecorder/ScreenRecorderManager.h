@@ -9,7 +9,9 @@
 #include "CursorHandler.h"
 #include "../VirtualMon/VirtualMonitor.h"
 #include "osxrdp/screenrecordshm.h"
+#include "osxrdp/stream_policy.h"
 #include <atomic>
+#include "H264VideoToolboxEncoder.h"
 
 class ScreenRecorderManager {
     
@@ -32,6 +34,9 @@ private:
         int recordFormat;
         int useVirtualMon;
         int monitorCount;
+        int policyVersion;
+        int preset;
+        osxrdp_stream_policy_t policy;
         
         struct MONITOR_INFO {
             int left;
@@ -87,6 +92,12 @@ private:
 
     screenrecord_frame_t _pendingDirty[16];
     bool _pendingDirtyFull[16];
+    int _lastScreenError;
+    bool _forceFullFrame[16];
+    H264VideoToolboxEncoder* _h264Encoder[16];
+    int _h264EncoderFailures[16];
+    bool _runtimeFailureNotified;
+    bool _preserveMetricsOnNextStop;
 
     bool CreateRecordShm(int recordIdx);
     void DestroyRecordShm();
@@ -117,6 +128,10 @@ private:
     
     static void HandleNV12AlignedRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
     static bool HandleNV12AlignedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity);
+
+    static void HandleH264AnnexBRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
+    bool RecreateH264Encoder(int displayIdx);
+    void SendEncoderRuntimeFailure();
     
     static void HandleRFXRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx);
     bool HandleRFXDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity, int displayIdx);

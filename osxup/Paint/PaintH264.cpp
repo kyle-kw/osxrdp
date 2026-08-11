@@ -112,6 +112,10 @@ bool PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
         imgDataSize == 0 || imgDataSize > INT_MAX) {
         return false;
     }
+    if (_alreadyCompressed &&
+        (frameInfo->payloadFlags & OSXRDP_FRAME_PAYLOAD_H264_ANNEXB) == 0) {
+        return false;
+    }
     
     XRDP_EGFX_START_FRAME startCmd;
     startCmd.header.cmdId = 11;
@@ -137,14 +141,16 @@ bool PaintH264::DoPaint(const struct mod* mod, screenrecord_frame_t* frameInfo, 
     if (xstream_writeInt16(_drawCmd, displayId) != 0 ||
         xstream_writeInt16(_drawCmd, 0x000B) != 0 ||
         xstream_writeInt8(_drawCmd, 0x20) != 0 ||
-        xstream_writeInt32(_drawCmd, (displayId & 0xF) << 28) != 0) {
+        xstream_writeInt32(_drawCmd,
+            osxrdp_gfx_h264_surface_flags(displayId, _alreadyCompressed)) != 0) {
         return false;
     }
 
     int rectsStart = xstream_getPosition(_drawCmd);
     
     // rects
-    if (frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
+    if (frameInfo->updateKind == OSXRDP_FRAME_UPDATE_DIRTY &&
+        frameInfo->dirtyCount > 0 && frameInfo->dirtyCount <= MAX_DIRTY_COUNT) {
         if (xstream_writeInt16(_drawCmd, frameInfo->dirtyCount) != 0) return false;
         
         for (int i = 0; i < frameInfo->dirtyCount; i++) {

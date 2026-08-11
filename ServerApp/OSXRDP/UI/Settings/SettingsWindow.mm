@@ -4,6 +4,7 @@
 #include "../../Utils/ConnectionStatusCoordinator.h"
 #import "../../Utils/AppConfig.h"
 #import "../InsetCardView.h"
+#include <string.h>
 
 @interface SettingsWindow ()
 
@@ -14,7 +15,10 @@
 @property (strong) NSSwitch *autoLandSwitch;
 @property (strong) NSTextField *folderLabel;
 @property (strong) NSButton *folderPickerButton;
+@property (strong) NSPopUpButton *streamQualityPopup;
+@property (strong) NSTextField *streamQualityDetailLabel;
 @property (strong) NSTextField *diagResolutionLabel;
+@property (strong) NSTextField *diagPresetLabel;
 @property (strong) NSTextField *diagCodecLabel;
 @property (strong) NSTextField *diagFramerateLabel;
 @property (strong) NSTextField *diagFrameLagLabel;
@@ -23,6 +27,12 @@
 @property (strong) NSTextField *diagCopyFailuresLabel;
 @property (strong) NSTextField *diagRFXFullRedrawLabel;
 @property (strong) NSTextField *diagIMETimeoutsLabel;
+@property (strong) NSTextField *diagEncodedBytesLabel;
+@property (strong) NSTextField *diagRecentBitrateLabel;
+@property (strong) NSTextField *diagNoChangeSkipsLabel;
+@property (strong) NSTextField *diagThrottledSkipsLabel;
+@property (strong) NSTextField *diagKeyframesLabel;
+@property (strong) NSTextField *diagEncoderFallbacksLabel;
 @property (assign) BOOL didEndSheet;
 
 @end
@@ -30,12 +40,12 @@
 @implementation SettingsWindow
 
 - (instancetype)init {
-    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 520, 460)
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 560, 620)
                                                   styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
                                                     backing:NSBackingStoreBuffered
                                                       defer:NO];
     window.title = NSLocalizedString(@"settings.window.title", nil);
-    window.minSize = NSMakeSize(500.0, 430.0);
+    window.minSize = NSMakeSize(520.0, 560.0);
     window.releasedWhenClosed = NO;
 
     self = [super initWithWindow:window];
@@ -107,6 +117,30 @@
 
 - (NSView *)buildGeneralView {
     NSView *view = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 480, 350)];
+
+    NSTextField *qualityTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.streaming.title", nil)];
+    qualityTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    self.streamQualityPopup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [self.streamQualityPopup addItemsWithTitles:@[
+        NSLocalizedString(@"settings.streaming.high", nil),
+        NSLocalizedString(@"settings.streaming.hotspot", nil),
+        NSLocalizedString(@"settings.streaming.extreme", nil),
+    ]];
+    self.streamQualityPopup.target = self;
+    self.streamQualityPopup.action = @selector(streamQualityChanged:);
+    NSStackView *qualityHeader = [NSStackView stackViewWithViews:@[qualityTitle, self.streamQualityPopup]];
+    qualityHeader.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    qualityHeader.alignment = NSLayoutAttributeCenterY;
+    [qualityTitle setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.streamQualityDetailLabel = [NSTextField wrappingLabelWithString:@""];
+    self.streamQualityDetailLabel.font = [NSFont systemFontOfSize:11.0];
+    self.streamQualityDetailLabel.textColor = NSColor.secondaryLabelColor;
+    NSStackView *qualityStack = [NSStackView stackViewWithViews:@[qualityHeader, self.streamQualityDetailLabel]];
+    qualityStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    qualityStack.alignment = NSLayoutAttributeLeading;
+    qualityStack.spacing = 5.0;
+    [qualityHeader.widthAnchor constraintEqualToAnchor:qualityStack.widthAnchor].active = YES;
+    InsetCardView *qualityCard = [self cardWithContentView:qualityStack];
 
     NSTextField *startupTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.startup.title", nil)];
     startupTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
@@ -193,7 +227,7 @@
     [destinationRow.widthAnchor constraintEqualToAnchor:fileStack.widthAnchor].active = YES;
     InsetCardView *fileCard = [self cardWithContentView:fileStack];
 
-    NSStackView *root = [NSStackView stackViewWithViews:@[startupCard, inputCard, fileCard]];
+    NSStackView *root = [NSStackView stackViewWithViews:@[qualityCard, startupCard, inputCard, fileCard]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
@@ -203,6 +237,7 @@
         [root.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:18.0],
         [root.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-18.0],
         [root.topAnchor constraintEqualToAnchor:view.topAnchor constant:18.0],
+        [qualityCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [startupCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [inputCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [fileCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
@@ -215,6 +250,7 @@
     NSTextField *sessionTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.diag.session_title", nil)];
     sessionTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold];
     NSGridView *sessionGrid = [self diagnosticGridWithRows:@[
+        @[NSLocalizedString(@"settings.diag.preset", nil), [self diagnosticValue:&_diagPresetLabel]],
         @[NSLocalizedString(@"settings.diag.resolution", nil), [self diagnosticValue:&_diagResolutionLabel]],
         @[NSLocalizedString(@"settings.diag.codec", nil), [self diagnosticValue:&_diagCodecLabel]],
         @[NSLocalizedString(@"settings.diag.framerate", nil), [self diagnosticValue:&_diagFramerateLabel]],
@@ -229,9 +265,19 @@
         @[NSLocalizedString(@"settings.diag.copy_failures", nil), [self diagnosticValue:&_diagCopyFailuresLabel]],
         @[NSLocalizedString(@"settings.diag.rfx_full_redraw", nil), [self diagnosticValue:&_diagRFXFullRedrawLabel]],
         @[NSLocalizedString(@"settings.diag.ime_timeouts", nil), [self diagnosticValue:&_diagIMETimeoutsLabel]],
+        @[NSLocalizedString(@"settings.diag.encoded_bytes", nil), [self diagnosticValue:&_diagEncodedBytesLabel]],
+        @[NSLocalizedString(@"settings.diag.recent_bitrate", nil), [self diagnosticValue:&_diagRecentBitrateLabel]],
+        @[NSLocalizedString(@"settings.diag.no_change_skips", nil), [self diagnosticValue:&_diagNoChangeSkipsLabel]],
+        @[NSLocalizedString(@"settings.diag.throttled_skips", nil), [self diagnosticValue:&_diagThrottledSkipsLabel]],
+        @[NSLocalizedString(@"settings.diag.keyframes", nil), [self diagnosticValue:&_diagKeyframesLabel]],
+        @[NSLocalizedString(@"settings.diag.encoder_fallbacks", nil), [self diagnosticValue:&_diagEncoderFallbacksLabel]],
     ]];
 
-    NSStackView *root = [NSStackView stackViewWithViews:@[sessionTitle, sessionGrid, counterTitle, counterGrid]];
+    NSTextField *trafficNote = [NSTextField wrappingLabelWithString:NSLocalizedString(@"settings.diag.traffic_note", nil)];
+    trafficNote.font = [NSFont systemFontOfSize:10.0];
+    trafficNote.textColor = NSColor.secondaryLabelColor;
+
+    NSStackView *root = [NSStackView stackViewWithViews:@[sessionTitle, sessionGrid, counterTitle, counterGrid, trafficNote]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
@@ -279,12 +325,35 @@
 }
 
 - (void)loadSettings {
+    [self.streamQualityPopup selectItemAtIndex:AppConfig.shared.streamQualityPreset];
+    [self updateStreamQualityDetail];
     self.macNativeInputSwitch.state = AppConfig.shared.macNativeInputMappingEnabled
         ? NSControlStateValueOn : NSControlStateValueOff;
     self.autoLandSwitch.state = AppConfig.shared.autoLandFiles ? NSControlStateValueOn : NSControlStateValueOff;
     [self updateFolderLabel];
     [self updateFileControls];
     [self refreshStartupStatus];
+}
+
+- (void)updateStreamQualityDetail {
+    switch (self.streamQualityPopup.indexOfSelectedItem) {
+        case OSXRDP_STREAM_QUALITY_HOTSPOT:
+            self.streamQualityDetailLabel.stringValue = NSLocalizedString(@"settings.streaming.hotspot.detail", nil);
+            break;
+        case OSXRDP_STREAM_QUALITY_EXTREME_SAVER:
+            self.streamQualityDetailLabel.stringValue = NSLocalizedString(@"settings.streaming.extreme.detail", nil);
+            break;
+        default:
+            self.streamQualityDetailLabel.stringValue = NSLocalizedString(@"settings.streaming.high.detail", nil);
+            break;
+    }
+}
+
+- (IBAction)streamQualityChanged:(id)sender {
+    AppConfig.shared.streamQualityPreset =
+        (osxrdp_stream_quality_preset_t)self.streamQualityPopup.indexOfSelectedItem;
+    [self updateStreamQualityDetail];
+    (void)sender;
 }
 
 - (void)refreshStartupStatus {
@@ -415,6 +484,7 @@
     if (!connected) {
         for (NSTextField *label in @[
             self.diagResolutionLabel,
+            self.diagPresetLabel,
             self.diagCodecLabel,
             self.diagFramerateLabel,
             self.diagFrameLagLabel,
@@ -423,6 +493,12 @@
             self.diagCopyFailuresLabel,
             self.diagRFXFullRedrawLabel,
             self.diagIMETimeoutsLabel,
+            self.diagEncodedBytesLabel,
+            self.diagRecentBitrateLabel,
+            self.diagNoChangeSkipsLabel,
+            self.diagThrottledSkipsLabel,
+            self.diagKeyframesLabel,
+            self.diagEncoderFallbacksLabel,
         ]) {
             label.stringValue = @"—";
         }
@@ -432,6 +508,13 @@
     self.diagResolutionLabel.stringValue = snap.currentWidth > 0
         ? [NSString stringWithFormat:@"%d × %d", snap.currentWidth, snap.currentHeight]
         : @"—";
+    NSArray<NSString *> *presetNames = @[
+        NSLocalizedString(@"settings.streaming.high", nil),
+        NSLocalizedString(@"settings.streaming.hotspot", nil),
+        NSLocalizedString(@"settings.streaming.extreme", nil),
+    ];
+    self.diagPresetLabel.stringValue = snap.currentPreset >= 0 && snap.currentPreset < (int)presetNames.count
+        ? presetNames[snap.currentPreset] : @"—";
     self.diagCodecLabel.stringValue = snap.currentCodecBuf[0] != '\0'
         ? [NSString stringWithUTF8String:snap.currentCodecBuf]
         : @"—";
@@ -443,6 +526,19 @@
     self.diagCopyFailuresLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.copyFailures];
     self.diagRFXFullRedrawLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.rfxFullRedrawRequests];
     self.diagIMETimeoutsLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.imeTimeouts];
+    BOOL hasEncodedMetrics = snap.currentPreset != OSXRDP_STREAM_QUALITY_HIGH &&
+        strcmp(snap.currentCodecBuf, "VideoToolbox H.264") == 0;
+    self.diagEncodedBytesLabel.stringValue = hasEncodedMetrics
+        ? [NSByteCountFormatter stringFromByteCount:(long long)snap.encodedScreenBytes
+                                         countStyle:NSByteCountFormatterCountStyleFile]
+        : @"—";
+    self.diagRecentBitrateLabel.stringValue = hasEncodedMetrics
+        ? [NSString stringWithFormat:@"%.2f Mbps", (double)snap.recentEncodedBitsPerSecond / 1000000.0]
+        : @"—";
+    self.diagNoChangeSkipsLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.noChangeSkips];
+    self.diagThrottledSkipsLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.throttledSkips];
+    self.diagKeyframesLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.keyframes];
+    self.diagEncoderFallbacksLabel.stringValue = [NSString stringWithFormat:@"%llu", (unsigned long long)snap.encoderFallbacks];
 }
 
 - (IBAction)doneClicked:(id)sender {

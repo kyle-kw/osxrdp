@@ -35,6 +35,10 @@ ConnectionDiagnosticsSnapshot ConnectionDiagnostics::Capture(void) {
                               &s.currentFramerate, s.currentCodecBuf, sizeof(s.currentCodecBuf),
                               &s.frameLag, &s.totalFramesWritten, &s.droppedFrames,
                               &s.copyFailures, &s.rfxFullRedrawRequests, &s.imeTimeouts);
+    SessionMetricsGetStreamingSnapshot(&s.currentPreset, &s.encodedScreenBytes,
+                                       &s.recentEncodedBitsPerSecond,
+                                       &s.noChangeSkips, &s.throttledSkips,
+                                       &s.keyframes, &s.encoderFallbacks);
     s.lastStartErrorKey = g_lastStartErrorKey[0] != '\0' ? g_lastStartErrorKey : "";
     s.state = ConnectionStateResolve(s.accessibilityGranted,
                                      s.screenRecordingGranted,

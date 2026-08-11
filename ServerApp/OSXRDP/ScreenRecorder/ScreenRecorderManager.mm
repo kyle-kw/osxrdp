@@ -2,6 +2,7 @@
 
 #include "ScreenRecorderManager.h"
 #include "osxrdp/packet.h"
+#include "osxrdp/dirty_region.h"
 #import "ScreenRecorderImpl.h"
 #import "ScreenRecorderFallbackImpl.h"
 #import "../VirtualMon/DisplayUtils.h"
@@ -136,11 +137,17 @@ ScreenRecorderManager::ScreenRecorderManager(bool useLegacyRecorder) :
     _rfxTileCols(0),
     _rfxTileRows(0),
     _rfxFullRedrawRequired(true),
-    _rfxConvertQueue(NULL)
+    _rfxConvertQueue(NULL),
+    _lastScreenError(OSXRDP_SCREEN_ERROR_NONE),
+    _runtimeFailureNotified(false),
+    _preserveMetricsOnNextStop(false)
 {
     memset(&_recordParams, 0x00, sizeof(_recordParams));
     memset(_recorder, 0x00, sizeof(_recorder));
     memset(_recordShm, 0x00, sizeof(_recordShm));
+    memset(_forceFullFrame, 1, sizeof(_forceFullFrame));
+    memset(_h264Encoder, 0, sizeof(_h264Encoder));
+    memset(_h264EncoderFailures, 0, sizeof(_h264EncoderFailures));
     ResetPendingDirty();
     _rfxConvertQueue = dispatch_queue_create("osxrdp.rfx.convert", DISPATCH_QUEUE_CONCURRENT);
 }
@@ -155,9 +162,13 @@ ScreenRecorderManager::~ScreenRecorderManager() {
 }
 
 bool ScreenRecorderManager::StartRecord(xstream_t* cmd) {
+    _lastScreenError = OSXRDP_SCREEN_ERROR_NONE;
     memset(&_recordParams, 0x00, sizeof(struct RecordStartParams));
     
     if (ParseStartRecordParams(cmd, &_recordParams) == false) {
+        if (_lastScreenError == OSXRDP_SCREEN_ERROR_NONE) {
+            _lastScreenError = OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+        }
         return false;
     }
 
@@ -214,10 +225,27 @@ bool ScreenRecorderManager::StartRecordWithParams() {
         else if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_RFX) {
             recordDataCb = HandleRFXRecordData;
         }
+        else if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
+            recordDataCb = HandleH264AnnexBRecordData;
+        }
 
         int outputIndex = _recordParams.monitorInfo[i].outputIndex;
         int recordWidth = GetMonitorRecordWidth(i);
         int recordHeight = GetMonitorRecordHeight(i);
+
+        if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
+            _h264Encoder[outputIndex] = new H264VideoToolboxEncoder();
+            if (_h264Encoder[outputIndex] == NULL ||
+                !_h264Encoder[outputIndex]->Initialize(recordWidth, recordHeight,
+                    _recordParams.policy.framerate,
+                    _recordParams.policy.targetBitrate,
+                    _recordParams.policy.maximumBitrate,
+                    _recordParams.policy.keyframeIntervalSeconds)) {
+                _lastScreenError = OSXRDP_SCREEN_ERROR_VIDEOTOOLBOX_INITIALIZATION;
+                Stop();
+                return false;
+            }
+        }
         
         [impl initializeWithDisplayId:_recordParams.monitorInfo[i].displayId
                     DisplayIndex:outputIndex
@@ -249,6 +277,7 @@ bool ScreenRecorderManager::StartRecordWithParams() {
                                           height:_recordParams.height
                                         framerate:_recordParams.framerate
                                      recordFormat:_recordParams.recordFormat
+                                          preset:_recordParams.preset
                                           writePos:writePos
                                            readPos:readPos];
 
@@ -275,6 +304,7 @@ bool ScreenRecorderManager::HandleScreenResize(xipc_t* client, xstream_t* cmd) {
     memcpy(&_recordParams, &newParams, sizeof(RecordStartParams));
 
     // Tear down existing recorders + virtual display + SHM
+    _preserveMetricsOnNextStop = true;
     Stop();
 
     // Rebuild at new resolution
@@ -324,6 +354,10 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
         return false;
     }
 
+    if (xstream_getRemaining(cmd) < (int)(sizeof(int) * 7)) {
+        _lastScreenError = OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+        return false;
+    }
     params->monitorIndex = xstream_readInt32(cmd);
     params->width = xstream_readInt32(cmd);
     params->height = xstream_readInt32(cmd);
@@ -332,7 +366,11 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
     params->useVirtualMon = xstream_readInt32(cmd);
     params->monitorCount = xstream_readInt32(cmd);
 
-    if (params->monitorCount > 16) params->monitorCount = 16;
+    if (params->monitorCount < 1 || params->monitorCount > 16 ||
+        xstream_getRemaining(cmd) < params->monitorCount * (int)(sizeof(int) * 5)) {
+        _lastScreenError = OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+        return false;
+    }
     int requestedMonitorCount = params->monitorCount;
     RecordStartParams::MONITOR_INFO requestedMonitorInfo[16];
     memset(requestedMonitorInfo, 0x00, sizeof(requestedMonitorInfo));
@@ -346,13 +384,49 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
         requestedMonitorInfo[i].outputIndex = i;
     }
 
+    int remaining = xstream_getRemaining(cmd);
+    if (remaining == 0) {
+        params->policyVersion = 0;
+        params->preset = OSXRDP_STREAM_QUALITY_HIGH;
+    }
+    else if (remaining == (int)(sizeof(int) * 2)) {
+        params->policyVersion = xstream_readInt32(cmd);
+        params->preset = xstream_readInt32(cmd);
+        if (params->policyVersion != OSXRDP_STREAM_POLICY_VERSION ||
+            !osxrdp_stream_quality_is_valid(params->preset)) {
+            _lastScreenError = OSXRDP_SCREEN_ERROR_UNKNOWN_POLICY;
+            return false;
+        }
+    }
+    else {
+        _lastScreenError = OSXRDP_SCREEN_ERROR_INVALID_REQUEST;
+        return false;
+    }
+    osxrdp_stream_policy_resolve(params->preset, &params->policy);
+
+    if (params->policy.usesAgentH264) {
+        if (requestedMonitorCount > 1) {
+            _lastScreenError = OSXRDP_SCREEN_ERROR_MULTIMONITOR_UNSUPPORTED;
+            return false;
+        }
+        if (params->recordFormat != OSXRDP_RECORDFORMAT_H264_ANNEXB &&
+            params->recordFormat != OSXRDP_RECORDFORMAT_NV12_PACKED) {
+            _lastScreenError = OSXRDP_SCREEN_ERROR_H264_UNSUPPORTED;
+            return false;
+        }
+        params->framerate = params->policy.framerate;
+    }
+
     // Lock screen does not support virtual monitor.
     if (is_root_process() != 0) {
         params->useVirtualMon = 0;
-        params->framerate = 30;
+        if (!params->policy.usesAgentH264) params->framerate = 30;
     }
     else {
-        if (params->recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
+        if (params->policy.usesAgentH264) {
+            params->framerate = params->policy.framerate;
+        }
+        else if (params->recordFormat == OSXRDP_RECORDFORMAT_NV12_ALIGNED) {
             params->framerate = 60;
         }
         else if (params->recordFormat == OSXRDP_RECORDFORMAT_NV12_PACKED) {
@@ -363,7 +437,9 @@ bool ScreenRecorderManager::ParseStartRecordParams(xstream_t* cmd, RecordStartPa
         }
     }
     
-    bool forceSingleMonitor = (params->useVirtualMon == 0 || params->recordFormat != OSXRDP_RECORDFORMAT_NV12_PACKED);
+    bool forceSingleMonitor = (params->useVirtualMon == 0 ||
+        (params->recordFormat != OSXRDP_RECORDFORMAT_NV12_PACKED &&
+         params->recordFormat != OSXRDP_RECORDFORMAT_H264_ANNEXB));
     if (forceSingleMonitor == true) {
         int monitorIndex = 0;
         for (int i = 0; i < requestedMonitorCount; i++) {
@@ -552,6 +628,13 @@ bool ScreenRecorderManager::CreateRecordShm(int recordIdx) {
         if (!CheckedAddSize(pixelCount, pixelCount / 2, &payloadSize) ||
             !CheckedAddSize(sizeof(size_t), payloadSize, &rawDataSize)) return false;
     }
+    else if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_H264_ANNEXB) {
+        // A conservative per-frame cap. Normal payloads are constrained by the
+        // configured data-rate limit and are substantially smaller than NV12.
+        size_t payloadSize = 0;
+        if (!CheckedMulSize(pixelCount, 2, &payloadSize) ||
+            !CheckedAddSize(sizeof(size_t), payloadSize, &rawDataSize)) return false;
+    }
     else if (_recordParams.recordFormat == OSXRDP_RECORDFORMAT_BGRA32) {
         size_t payloadSize = 0;
         if (!CheckedMulSize(pixelCount, 4, &payloadSize) ||
@@ -696,7 +779,17 @@ void ScreenRecorderManager::Stop() {
     ResetPendingDirty();
 
     // Clear diagnostics so Settings UI does not show stale resolution/lag after stop
-    [SessionMetrics.shared reset];
+    if (!_preserveMetricsOnNextStop) {
+        [SessionMetrics.shared reset];
+    }
+    _preserveMetricsOnNextStop = false;
+    for (int i = 0; i < 16; ++i) {
+        delete _h264Encoder[i];
+        _h264Encoder[i] = NULL;
+        _h264EncoderFailures[i] = 0;
+        _forceFullFrame[i] = true;
+    }
+    _runtimeFailureNotified = false;
     _client.store(NULL, std::memory_order_release);
 }
 
@@ -721,6 +814,7 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
                 xstream_writeInt32(result, OSXRDP_CMDTYPE_SCREEN);
                 xstream_writeInt32(result, OSXRDP_PACKETTYPE_REP_SCREEN);
                 xstream_writeInt32(result, re ? 1 : 0);
+                xstream_writeInt32(result, re ? OSXRDP_SCREEN_ERROR_NONE : _lastScreenError);
                 
                 int rawBufferLen = 0;
                 const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
@@ -737,6 +831,24 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
             Stop();
             break;
         }
+        case OSXRDP_PACKETTYPE_REQ_SCREENRECONFIGURE: {
+            _preserveMetricsOnNextStop = true;
+            Stop();
+            _client.store(client, std::memory_order_release);
+            bool re = StartRecord(cmd);
+            xstream* result = xstream_create(32);
+            if (result != NULL) {
+                xstream_writeInt32(result, OSXRDP_CMDTYPE_SCREEN);
+                xstream_writeInt32(result, OSXRDP_PACKETTYPE_REP_SCREENRECONFIGURE);
+                xstream_writeInt32(result, re ? 1 : 0);
+                xstream_writeInt32(result, re ? OSXRDP_SCREEN_ERROR_NONE : _lastScreenError);
+                int rawBufferLen = 0;
+                const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
+                xipc_send_data(client, rawBuffer, rawBufferLen);
+                xstream_free(result);
+            }
+            break;
+        }
         case OSXRDP_PACKETTYPE_REQ_SCREENRESIZE: {
             bool re = HandleScreenResize(client, cmd);
 
@@ -749,6 +861,7 @@ void ScreenRecorderManager::HandleCommand(xipc_t* client, xstream_t* cmd) {
                 xstream_writeInt32(result, re ? 1 : 0);
                 xstream_writeInt32(result, re ? _recordParams.width : 0);
                 xstream_writeInt32(result, re ? _recordParams.height : 0);
+                xstream_writeInt32(result, re ? OSXRDP_SCREEN_ERROR_NONE : _lastScreenError);
 
                 int rawBufferLen = 0;
                 const void* rawBuffer = xstream_get_raw_buffer(result, &rawBufferLen);
@@ -1042,19 +1155,34 @@ void ScreenRecorderManager::PopulateDirtyRectsFromArray(const CGRect* dirtyRects
         return;
     }
 
+    current_frame->updateKind = 0;
+    current_frame->payloadFlags = 0;
     current_frame->dirtyCount = 0;
-    if (dirtyRects == NULL || dirtyRectsCnt <= 0) {
+    if (dirtyRectsCnt < 0) {
+        current_frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+        current_frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
+        return;
+    }
+    if (dirtyRects == NULL || dirtyRectsCnt == 0) {
         return;
     }
 
-    current_frame->dirtyCount = dirtyRectsCnt;
-    if (current_frame->dirtyCount > MAX_DIRTY_COUNT) {
-        current_frame->dirtyCount = 0;
-        return;
-    }
-
-    for (int i = 0; i < current_frame->dirtyCount; i++) {
-        ProcessDirtyArea(&dirtyRects[i], width, height, &(current_frame->dirtys[i]));
+    current_frame->updateKind = OSXRDP_FRAME_UPDATE_DIRTY;
+    for (int offset = 0; offset < dirtyRectsCnt; offset += MAX_DIRTY_COUNT) {
+        int chunkCount = dirtyRectsCnt - offset;
+        if (chunkCount > MAX_DIRTY_COUNT) chunkCount = MAX_DIRTY_COUNT;
+        struct RECT chunk[MAX_DIRTY_COUNT];
+        for (int i = 0; i < chunkCount; ++i) {
+            ProcessDirtyArea(&dirtyRects[offset + i], width, height, &chunk[i]);
+        }
+        int mergeResult = osxrdp_dirty_region_merge(current_frame->dirtys,
+            &current_frame->dirtyCount, chunk, chunkCount, width, height);
+        if (mergeResult == OSXRDP_DIRTY_MERGE_FULL) {
+            current_frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+            current_frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
+            current_frame->dirtyCount = 0;
+            return;
+        }
     }
 }
 
@@ -1081,23 +1209,29 @@ void ScreenRecorderManager::AddPendingDirty(int displayIdx, const CGRect* dirtyR
         return;
     }
 
-    if (dirtyRects == NULL || dirtyRectsCnt <= 0 || dirtyRectsCnt > MAX_DIRTY_COUNT) {
+    if (dirtyRectsCnt == 0) {
+        return;
+    }
+    if (dirtyRects == NULL || dirtyRectsCnt < 0) {
         _pendingDirty[displayIdx].dirtyCount = 0;
         _pendingDirtyFull[displayIdx] = true;
         return;
     }
 
-    if (_pendingDirty[displayIdx].dirtyCount + dirtyRectsCnt > MAX_DIRTY_COUNT) {
-        _pendingDirty[displayIdx].dirtyCount = 0;
-        _pendingDirtyFull[displayIdx] = true;
-        return;
-    }
-
-    CGRect tmp;
-    for (int i = 0; i < dirtyRectsCnt; i++) {
-        int index = _pendingDirty[displayIdx].dirtyCount++;
-        memcpy(&tmp, &dirtyRects[i], sizeof(CGRect));
-        ProcessDirtyArea(&tmp, width, height, &_pendingDirty[displayIdx].dirtys[index]);
+    for (int offset = 0; offset < dirtyRectsCnt; offset += MAX_DIRTY_COUNT) {
+        int chunkCount = dirtyRectsCnt - offset;
+        if (chunkCount > MAX_DIRTY_COUNT) chunkCount = MAX_DIRTY_COUNT;
+        struct RECT chunk[MAX_DIRTY_COUNT];
+        for (int i = 0; i < chunkCount; ++i) {
+            ProcessDirtyArea(&dirtyRects[offset + i], width, height, &chunk[i]);
+        }
+        int result = osxrdp_dirty_region_merge(_pendingDirty[displayIdx].dirtys,
+            &_pendingDirty[displayIdx].dirtyCount, chunk, chunkCount, width, height);
+        if (result == OSXRDP_DIRTY_MERGE_FULL) {
+            _pendingDirty[displayIdx].dirtyCount = 0;
+            _pendingDirtyFull[displayIdx] = true;
+            return;
+        }
     }
 }
 
@@ -1121,7 +1255,10 @@ void ScreenRecorderManager::ApplyPendingDirty(int displayIdx, screenrecord_frame
         return;
     }
 
-    if (_pendingDirtyFull[displayIdx] == true || current_frame->dirtyCount == 0) {
+    if (_pendingDirtyFull[displayIdx] == true ||
+        current_frame->updateKind == OSXRDP_FRAME_UPDATE_FULL) {
+        current_frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+        current_frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
         current_frame->dirtyCount = 0;
         return;
     }
@@ -1131,15 +1268,23 @@ void ScreenRecorderManager::ApplyPendingDirty(int displayIdx, screenrecord_frame
         return;
     }
 
-    if (current_frame->dirtyCount + pendingCount > MAX_DIRTY_COUNT) {
+    int mergeWidth = _recordParams.width;
+    int mergeHeight = _recordParams.height;
+    if (_recordShm[displayIdx] != NULL && _recordShm[displayIdx]->mem != NULL) {
+        screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[displayIdx]->mem;
+        mergeWidth = shm->width;
+        mergeHeight = shm->height;
+    }
+    int mergeResult = osxrdp_dirty_region_merge(current_frame->dirtys,
+        &current_frame->dirtyCount, _pendingDirty[displayIdx].dirtys,
+        pendingCount, mergeWidth, mergeHeight);
+    if (mergeResult == OSXRDP_DIRTY_MERGE_FULL) {
+        current_frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+        current_frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
         current_frame->dirtyCount = 0;
         return;
     }
-
-    memcpy(&current_frame->dirtys[current_frame->dirtyCount],
-           _pendingDirty[displayIdx].dirtys,
-           sizeof(struct RECT) * pendingCount);
-    current_frame->dirtyCount += pendingCount;
+    current_frame->updateKind = OSXRDP_FRAME_UPDATE_DIRTY;
 }
 
 void ScreenRecorderManager::HandleNV12PackedRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx){
@@ -1148,6 +1293,12 @@ void ScreenRecorderManager::HandleNV12PackedRecordData(void* pixelBuffer, const 
     RecorderCallbackGuard callback(userData);
     ScreenRecorderManager* recorder = callback.manager();
     if (recorder == NULL) return;
+
+    if (dirtyRectsCnt == 0 && !recorder->_forceFullFrame[displayIdx]) {
+        [SessionMetrics.shared recordNoChangeSkip];
+        return;
+    }
+    if (recorder->_forceFullFrame[displayIdx]) dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
 
     screenrecord_shm_t* recordInfo = NULL;
     screenrecord_frame* slot = NULL;
@@ -1159,7 +1310,8 @@ void ScreenRecorderManager::HandleNV12PackedRecordData(void* pixelBuffer, const 
     }
     if (!PixelBufferMatchesRecordInfo(pixelBuffer, recordInfo)) {
         [SessionMetrics.shared recordCopyFailure];
-        recorder->AddPendingDirty(displayIdx, NULL, 0, recordInfo->width, recordInfo->height);
+        recorder->AddPendingDirty(displayIdx, NULL, OSXRDP_DIRTY_RECTS_FULL,
+                                  recordInfo->width, recordInfo->height);
         return;
     }
 
@@ -1172,6 +1324,7 @@ void ScreenRecorderManager::HandleNV12PackedRecordData(void* pixelBuffer, const 
     recorder->ApplyPendingDirty(displayIdx, slot);
     recorder->CommitFrameSlot(recordInfo, writePos, displayIdx);
     recorder->ResetPendingDirty(displayIdx);
+    recorder->_forceFullFrame[displayIdx] = false;
 }
 
 void ScreenRecorderManager::HandleNV12AlignedRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx){
@@ -1180,6 +1333,12 @@ void ScreenRecorderManager::HandleNV12AlignedRecordData(void* pixelBuffer, const
     RecorderCallbackGuard callback(userData);
     ScreenRecorderManager* recorder = callback.manager();
     if (recorder == NULL) return;
+
+    if (dirtyRectsCnt == 0 && !recorder->_forceFullFrame[displayIdx]) {
+        [SessionMetrics.shared recordNoChangeSkip];
+        return;
+    }
+    if (recorder->_forceFullFrame[displayIdx]) dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
 
     screenrecord_shm_t* recordInfo = NULL;
     screenrecord_frame* slot = NULL;
@@ -1191,7 +1350,8 @@ void ScreenRecorderManager::HandleNV12AlignedRecordData(void* pixelBuffer, const
     }
     if (!PixelBufferMatchesRecordInfo(pixelBuffer, recordInfo)) {
         [SessionMetrics.shared recordCopyFailure];
-        recorder->AddPendingDirty(displayIdx, NULL, 0, recordInfo->width, recordInfo->height);
+        recorder->AddPendingDirty(displayIdx, NULL, OSXRDP_DIRTY_RECTS_FULL,
+                                  recordInfo->width, recordInfo->height);
         return;
     }
 
@@ -1204,6 +1364,7 @@ void ScreenRecorderManager::HandleNV12AlignedRecordData(void* pixelBuffer, const
     recorder->ApplyPendingDirty(displayIdx, slot);
     recorder->CommitFrameSlot(recordInfo, writePos, displayIdx);
     recorder->ResetPendingDirty(displayIdx);
+    recorder->_forceFullFrame[displayIdx] = false;
 }
 
 bool ScreenRecorderManager::HandleNV12PackedDirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity) {
@@ -1228,12 +1389,144 @@ bool ScreenRecorderManager::HandleNV12AlignedDirtyArea(void* pixelBuffer, screen
     return true;
 }
 
+bool ScreenRecorderManager::RecreateH264Encoder(int displayIdx) {
+    if (displayIdx < 0 || displayIdx >= 16) return false;
+    delete _h264Encoder[displayIdx];
+    _h264Encoder[displayIdx] = new H264VideoToolboxEncoder();
+    if (_h264Encoder[displayIdx] == NULL || _recordShm[displayIdx] == NULL ||
+        _recordShm[displayIdx]->mem == NULL) return false;
+    screenrecord_shm_t* shm = (screenrecord_shm_t*)_recordShm[displayIdx]->mem;
+    return _h264Encoder[displayIdx]->Initialize(shm->width, shm->height,
+        _recordParams.policy.framerate,
+        _recordParams.policy.targetBitrate,
+        _recordParams.policy.maximumBitrate,
+        _recordParams.policy.keyframeIntervalSeconds);
+}
+
+void ScreenRecorderManager::SendEncoderRuntimeFailure() {
+    if (_runtimeFailureNotified) return;
+    _runtimeFailureNotified = true;
+    struct {
+        int cmdType;
+        int packetType;
+        int result;
+        int error;
+    } msg = {
+        OSXRDP_CMDTYPE_SCREEN,
+        OSXRDP_PACKETTYPE_REP_SCREENRECONFIGURE,
+        0,
+        OSXRDP_SCREEN_ERROR_ENCODER_RUNTIME,
+    };
+    xipc_t* client = _client.load(std::memory_order_acquire);
+    if (client != NULL) xipc_send_data(client, &msg, sizeof(msg));
+}
+
+void ScreenRecorderManager::HandleH264AnnexBRecordData(void* pixelBuffer,
+                                                        const CGRect* dirtyRects,
+                                                        int dirtyRectsCnt,
+                                                        void* userData,
+                                                        int displayIdx) {
+    if (pixelBuffer == NULL || userData == NULL || displayIdx < 0 || displayIdx >= 16) return;
+    RecorderCallbackGuard callback(userData);
+    ScreenRecorderManager* recorder = callback.manager();
+    if (recorder == NULL || recorder->_h264Encoder[displayIdx] == NULL) return;
+
+    screenrecord_shm_t* recordInfo = NULL;
+    if (recorder->_recordShm[displayIdx] != NULL) {
+        recordInfo = (screenrecord_shm_t*)recorder->_recordShm[displayIdx]->mem;
+    }
+    if (recordInfo == NULL || !PixelBufferMatchesRecordInfo(pixelBuffer, recordInfo)) {
+        [SessionMetrics.shared recordCopyFailure];
+        recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
+                                                  NULL, OSXRDP_DIRTY_RECTS_FULL);
+        return;
+    }
+
+    int wantFull = atomic_exchange_explicit(&recordInfo->consumer_request_full, 0,
+                                             memory_order_acquire);
+    bool forceFull = recorder->_forceFullFrame[displayIdx] || wantFull != 0 || dirtyRectsCnt < 0;
+    if (dirtyRectsCnt == 0 && !forceFull) {
+        [SessionMetrics.shared recordNoChangeSkip];
+        return;
+    }
+    if (forceFull) dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
+
+    unsigned int readPos = atomic_load_explicit(&recordInfo->read_pos, memory_order_acquire);
+    unsigned int writePosSnapshot = atomic_load_explicit(&recordInfo->write_pos, memory_order_relaxed);
+    if (writePosSnapshot - readPos >=
+        (unsigned int)recorder->_recordParams.policy.maximumPendingFrames) {
+        recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
+                                                  dirtyRects, dirtyRectsCnt);
+        [SessionMetrics.shared recordThrottledSkip];
+        return;
+    }
+
+    std::vector<uint8_t> annexB;
+    bool keyframe = false;
+    bool encoded = recorder->_h264Encoder[displayIdx]->Encode(
+        (CVPixelBufferRef)pixelBuffer, forceFull, &annexB, &keyframe);
+    if (!encoded) {
+        recorder->_h264EncoderFailures[displayIdx]++;
+        int failureAction = osxrdp_encoder_failure_action(
+            recorder->_h264EncoderFailures[displayIdx], 0);
+        if (failureAction == OSXRDP_ENCODER_ACTION_RETRY_VIDEOTOOLBOX &&
+            recorder->RecreateH264Encoder(displayIdx)) {
+            forceFull = true;
+            dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
+            annexB.clear();
+            encoded = recorder->_h264Encoder[displayIdx]->Encode(
+                (CVPixelBufferRef)pixelBuffer, true, &annexB, &keyframe);
+        }
+        if (!encoded) {
+            recorder->AddPendingDirtyFromPixelBuffer(displayIdx, pixelBuffer,
+                                                      dirtyRects, dirtyRectsCnt);
+            recorder->SendEncoderRuntimeFailure();
+            return;
+        }
+    }
+
+    screenrecord_frame* slot = NULL;
+    char* screenrecordData = NULL;
+    unsigned int writePos = 0;
+    if (!recorder->AcquireFrameSlot(&recordInfo, &slot, &screenrecordData,
+                                    &writePos, displayIdx)) {
+        // This should be unreachable because the pre-encode backlog check reserves
+        // capacity on the serial capture queue. Do not reorder an encoded P-frame.
+        recorder->SendEncoderRuntimeFailure();
+        return;
+    }
+    if (annexB.empty() || annexB.size() > recordInfo->screenrecord_data_size - sizeof(size_t)) {
+        [SessionMetrics.shared recordCopyFailure];
+        recorder->SendEncoderRuntimeFailure();
+        return;
+    }
+    size_t payloadSize = annexB.size();
+    memcpy(screenrecordData, &payloadSize, sizeof(payloadSize));
+    memcpy(screenrecordData + sizeof(payloadSize), annexB.data(), annexB.size());
+    PopulateDirtyRectsFromArray(dirtyRects, dirtyRectsCnt,
+                                recordInfo->width, recordInfo->height, slot);
+    recorder->ApplyPendingDirty(displayIdx, slot);
+    slot->payloadFlags |= OSXRDP_FRAME_PAYLOAD_H264_ANNEXB;
+    if (keyframe) slot->payloadFlags |= OSXRDP_FRAME_PAYLOAD_KEYFRAME;
+    [SessionMetrics.shared recordEncodedBytes:annexB.size() keyframe:keyframe];
+    recorder->CommitFrameSlot(recordInfo, writePos, displayIdx);
+    recorder->ResetPendingDirty(displayIdx);
+    recorder->_forceFullFrame[displayIdx] = false;
+    recorder->_h264EncoderFailures[displayIdx] = 0;
+}
+
 void ScreenRecorderManager::HandleBGRA32RecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx){
     if (pixelBuffer == NULL || userData == NULL) return;
 
     RecorderCallbackGuard callback(userData);
     ScreenRecorderManager* recorder = callback.manager();
     if (recorder == NULL) return;
+
+    if (dirtyRectsCnt == 0 && !recorder->_forceFullFrame[displayIdx]) {
+        [SessionMetrics.shared recordNoChangeSkip];
+        return;
+    }
+    if (recorder->_forceFullFrame[displayIdx]) dirtyRectsCnt = OSXRDP_DIRTY_RECTS_FULL;
 
     screenrecord_shm_t* recordInfo = NULL;
     screenrecord_frame* slot = NULL;
@@ -1245,7 +1538,8 @@ void ScreenRecorderManager::HandleBGRA32RecordData(void* pixelBuffer, const CGRe
     }
     if (!PixelBufferMatchesRecordInfo(pixelBuffer, recordInfo)) {
         [SessionMetrics.shared recordCopyFailure];
-        recorder->AddPendingDirty(displayIdx, NULL, 0, recordInfo->width, recordInfo->height);
+        recorder->AddPendingDirty(displayIdx, NULL, OSXRDP_DIRTY_RECTS_FULL,
+                                  recordInfo->width, recordInfo->height);
         return;
     }
 
@@ -1258,6 +1552,7 @@ void ScreenRecorderManager::HandleBGRA32RecordData(void* pixelBuffer, const CGRe
     recorder->ApplyPendingDirty(displayIdx, slot);
     recorder->CommitFrameSlot(recordInfo, writePos, displayIdx);
     recorder->ResetPendingDirty(displayIdx);
+    recorder->_forceFullFrame[displayIdx] = false;
 }
 
 void ScreenRecorderManager::HandleRFXRecordData(void* pixelBuffer, const CGRect* dirtyRects, int dirtyRectsCnt, void* userData, int displayIdx){
@@ -1287,6 +1582,11 @@ void ScreenRecorderManager::HandleRFXRecordData(void* pixelBuffer, const CGRect*
         [SessionMetrics.shared recordRFXFullRedrawRequest];
         recorder->InvalidateRFXCanonical();
     }
+    if (dirtyRectsCnt < 0) recorder->InvalidateRFXCanonical();
+    if (dirtyRectsCnt == 0 && !recorder->_rfxFullRedrawRequired) {
+        [SessionMetrics.shared recordNoChangeSkip];
+        return;
+    }
 
     if (recorder->HandleRFXDirtyArea(pixelBuffer, slot, dirtyRects, dirtyRectsCnt,
                                      screenrecord_data, recordInfo->screenrecord_data_size,
@@ -1297,6 +1597,7 @@ void ScreenRecorderManager::HandleRFXRecordData(void* pixelBuffer, const CGRect*
     }
     recorder->CommitFrameSlot(recordInfo, writePos, displayIdx);
     recorder->ResetPendingDirty(displayIdx);
+    recorder->_forceFullFrame[displayIdx] = false;
 }
 
 bool ScreenRecorderManager::HandleBGRA32DirtyArea(void* pixelBuffer, screenrecord_frame* current_frame, const CGRect* dirtyRects, int dirtyRectsCnt, char* screenrecord_data, size_t slotCapacity) {
@@ -1364,9 +1665,6 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
 
     // Determine if full redraw is needed
     bool doFullRedraw = _rfxFullRedrawRequired;
-    if (!doFullRedraw && current_frame->dirtyCount <= 0) {
-        doFullRedraw = true;
-    }
 
     // Build dirty tile bitmap
     const size_t maskSize = (tileTotal + 7) / 8;
@@ -1414,6 +1712,9 @@ bool ScreenRecorderManager::HandleRFXDirtyArea(void* pixelBuffer, screenrecord_f
     }
 
     if (doFullRedraw) {
+        current_frame->updateKind = OSXRDP_FRAME_UPDATE_FULL;
+        current_frame->payloadFlags |= OSXRDP_FRAME_PAYLOAD_FORCE_FULL;
+        current_frame->dirtyCount = 0;
         memset(mask, 0xFF, maskSize);
         // Clear excess bits when tileTotal is not a multiple of 8
         const size_t excessBits = (maskSize * 8) - tileTotal;

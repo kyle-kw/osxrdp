@@ -35,7 +35,7 @@ SYMROOT="$BUILD_ROOT/Build/Products"
 OBJROOT="$BUILD_ROOT/Build/Intermediates"
 # osxrdp packages target Apple Silicon only.
 ARCHS="${ARCHS:-arm64}"
-VERSION="${VERSION:-3.1.1}"
+VERSION="${VERSION:-3.2.0}"
 if [[ "$ARCHS" != "arm64" ]]; then
   echo "ERROR: only arm64 package builds are supported (got $ARCHS)"
   exit 1

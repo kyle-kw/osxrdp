@@ -10,6 +10,13 @@
 #define FRAME_SLOTS             7
 #define MAX_DIRTY_COUNT         128
 
+#define OSXRDP_FRAME_UPDATE_FULL  1
+#define OSXRDP_FRAME_UPDATE_DIRTY 2
+
+#define OSXRDP_FRAME_PAYLOAD_H264_ANNEXB 0x00000001U
+#define OSXRDP_FRAME_PAYLOAD_KEYFRAME     0x00000002U
+#define OSXRDP_FRAME_PAYLOAD_FORCE_FULL   0x00000004U
+
 struct RECT {
     short x;
     short y;
@@ -32,7 +39,9 @@ typedef struct cursor_data {
 } cursor_data_t;
 
 typedef struct screenrecord_frame {
-    int dirtyCount;  // <--- if this is 0, full redraw
+    int updateKind;
+    uint32_t payloadFlags;
+    int dirtyCount;
     struct RECT dirtys[MAX_DIRTY_COUNT];
 } screenrecord_frame_t;
 

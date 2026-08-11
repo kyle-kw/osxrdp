@@ -17,7 +17,7 @@ public:
     int Initialize(const struct mod* mod, int recordFormat, int sessionId, bool isLockScreen);
     void Release();
     bool TryReleaseForReconnect();
-    bool ReinitializeForResize();
+    bool ReinitializeForResize(int recordFormat = -1);
     
     bool Paint();
     void PaintEnd(int ackFrameId);
@@ -45,6 +45,7 @@ private:
 
     InFlightTracker _inFlightTracker;
     int _sessionId;
+    int _recordFormat;
     int _needPaintDisplay[16];
     unsigned int _lastSubmittedPos[16];
     bool _hasLastSubmittedPos[16];

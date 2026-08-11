@@ -81,6 +81,13 @@
 "settings.tab.general" = "General";
 "settings.tab.diagnostics" = "Diagnostics";
 "settings.button.done" = "Done";
+"settings.streaming.title" = "Streaming Quality";
+"settings.streaming.high" = "High Quality";
+"settings.streaming.hotspot" = "Hotspot Balanced";
+"settings.streaming.extreme" = "Extreme Saver";
+"settings.streaming.high.detail" = "Up to 60 fps using the current xrdp codec settings. Multiple monitors are supported. Changes apply to the next RDP connection.";
+"settings.streaming.hotspot.detail" = "24 fps, 2.5 Mbps target and 3.5 Mbps maximum. Requires H.264 and one monitor. For 4K, consider 1920 × 1080 or lower. Changes apply to the next RDP connection.";
+"settings.streaming.extreme.detail" = "15 fps, 1.0 Mbps target and 1.5 Mbps maximum. Requires H.264 and one monitor. For 4K, consider 1920 × 1080 or lower. Changes apply to the next RDP connection.";
 "settings.startup.title" = "Launch at Login";
 "settings.startup.detail" = "Start OSXRDP automatically when you sign in to this Mac.";
 "settings.startup.enabled" = "Enabled";
@@ -102,6 +109,7 @@
 "settings.folder.error.title" = "Could Not Use Folder";
 "settings.folder.error.message" = "OSXRDP could not save access to the selected folder.";
 "settings.diag.session_title" = "Current Session";
+"settings.diag.preset" = "Preset";
 "settings.diag.counters_title" = "Session Counters";
 "settings.diag.resolution" = "Resolution";
 "settings.diag.codec" = "Codec";
@@ -113,6 +121,13 @@
 "settings.diag.copy_failures" = "Copy Failures";
 "settings.diag.rfx_full_redraw" = "RFX Full Redraws";
 "settings.diag.ime_timeouts" = "IME Timeouts";
+"settings.diag.encoded_bytes" = "Encoded Screen Bytes";
+"settings.diag.recent_bitrate" = "Recent 5 s Bitrate";
+"settings.diag.no_change_skips" = "No-change Skips";
+"settings.diag.throttled_skips" = "Throttled Skips";
+"settings.diag.keyframes" = "Keyframes";
+"settings.diag.encoder_fallbacks" = "Encoder Fallbacks";
+"settings.diag.traffic_note" = "VideoToolbox screen payload only. TLS/RDP framing, clipboard, and file transfer traffic are not included; OpenH264 byte counts are unavailable.";
 
 "filecopy.window.title" = "Copying Files";
 "filecopy.button.cancel" = "Cancel";

@@ -8,6 +8,7 @@
 #include "xstream.h"
 #include "../osxup/Command/Command.h"
 #include "osxrdp/packet.h"
+#include "osxrdp/stream_policy.h"
 
 // Captured send buffer
 static char g_capturedBuffer[4096];
@@ -73,7 +74,8 @@ TEST_CASE(test_send_screen_resize_msg) {
     Command cmd;
     xipc_t dummyIpc = {};
     g_capturedLen = 0;
-    cmd.SendScreenResizeMsg(&dummyIpc, 1920, 1080, 0, 0, 0, NULL);
+    cmd.SendScreenResizeMsg(&dummyIpc, 1920, 1080, 60, 0, 0, 0, NULL,
+                            OSXRDP_STREAM_POLICY_VERSION, OSXRDP_STREAM_QUALITY_HIGH);
 
     // Wire: [CMDTYPE_SCREEN, REQ_SCREENRESIZE, 0(unused), width, height, 60(fps), recordFormat, useVirtualmon, monitorCount(1), 0, 0, width, height, 1]
     EXPECT_EQ_INT(read_int32_at(0), OSXRDP_CMDTYPE_SCREEN);
@@ -89,13 +91,16 @@ TEST_CASE(test_send_screen_resize_msg) {
     EXPECT_EQ_INT(read_int32_at(44), 1920);            // right
     EXPECT_EQ_INT(read_int32_at(48), 1080);            // bottom
     EXPECT_EQ_INT(read_int32_at(52), 1);               // is_primary
+    EXPECT_EQ_INT(read_int32_at(56), OSXRDP_STREAM_POLICY_VERSION);
+    EXPECT_EQ_INT(read_int32_at(60), OSXRDP_STREAM_QUALITY_HIGH);
 }
 
 TEST_CASE(test_send_screen_resize_msg_odd_dimensions) {
     Command cmd;
     xipc_t dummyIpc = {};
     g_capturedLen = 0;
-    cmd.SendScreenResizeMsg(&dummyIpc, 1921, 1081, 0, 0, 0, NULL);
+    cmd.SendScreenResizeMsg(&dummyIpc, 1921, 1081, 60, 0, 0, 0, NULL,
+                            OSXRDP_STREAM_POLICY_VERSION, OSXRDP_STREAM_QUALITY_HIGH);
 
     // Odd dimensions should be even-aligned
     EXPECT_EQ_INT(read_int32_at(12), 1920);
@@ -120,7 +125,8 @@ TEST_CASE(test_send_screen_resize_msg_with_monitors) {
     monitors[1].bottom = 1080;
     monitors[1].is_primary = 0;
 
-    cmd.SendScreenResizeMsg(&dummyIpc, 3840, 1080, 1, 1, 2, monitors);
+    cmd.SendScreenResizeMsg(&dummyIpc, 3840, 1080, 60, 1, 1, 2, monitors,
+                            OSXRDP_STREAM_POLICY_VERSION, OSXRDP_STREAM_QUALITY_HIGH);
 
     EXPECT_EQ_INT(read_int32_at(0), OSXRDP_CMDTYPE_SCREEN);
     EXPECT_EQ_INT(read_int32_at(4), OSXRDP_PACKETTYPE_REQ_SCREENRESIZE);
@@ -150,11 +156,13 @@ TEST_CASE(test_send_record_start_clamps_monitor_count) {
     }
 
     g_capturedLen = 0;
-    cmd.SendRecordStartMsg(&dummyIpc, 1920, 1080, 0, 1, 17, monitors);
+    cmd.SendRecordStartMsg(&dummyIpc, 1920, 1080, 60, 0, 1, 17, monitors,
+                           OSXRDP_STREAM_POLICY_VERSION, OSXRDP_STREAM_QUALITY_HIGH);
 
     EXPECT_EQ_INT(read_int32_at(32), 16);
-    EXPECT_EQ_INT(g_capturedLen, (9 + 16 * 5) * (int)sizeof(int32_t));
+    EXPECT_EQ_INT(g_capturedLen, (11 + 16 * 5) * (int)sizeof(int32_t));
     EXPECT_EQ_INT(read_int32_at(36 + 15 * 20 + 8), 16);
+    EXPECT_EQ_INT(read_int32_at(36 + 16 * 20), OSXRDP_STREAM_POLICY_VERSION);
 }
 
 int main(void) {

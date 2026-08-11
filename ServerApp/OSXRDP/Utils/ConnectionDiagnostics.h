@@ -27,6 +27,13 @@ struct ConnectionDiagnosticsSnapshot {
     uint64_t copyFailures;
     uint64_t rfxFullRedrawRequests;
     uint64_t imeTimeouts;
+    int currentPreset;
+    uint64_t encodedScreenBytes;
+    uint64_t recentEncodedBitsPerSecond;
+    uint64_t noChangeSkips;
+    uint64_t throttledSkips;
+    uint64_t keyframes;
+    uint64_t encoderFallbacks;
 };
 
 class ConnectionDiagnostics {
