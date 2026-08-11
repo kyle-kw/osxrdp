@@ -376,6 +376,12 @@ void InputHandler::HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
 }
 
 void InputHandler::PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
+    if (event.action == InputMapping::KeyAction::ToggleCapsLockState) {
+        if (event.keyDown) {
+            _keyboardModifierFlags ^= kCGEventFlagMaskAlphaShift;
+        }
+        return;
+    }
     if (event.action == InputMapping::KeyAction::MissionControl) {
         if (event.keyDown) {
             PostMissionControlShortcut();

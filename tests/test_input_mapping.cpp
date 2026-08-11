@@ -81,13 +81,13 @@ TEST_CASE(mac_style_maps_capslock_to_input_source_and_shift_to_capslock) {
     expect_key(state.Translate(false, 0x3A, false, true),
                KeyAction::SwitchInputSource, kVK_CapsLock, 0, false);
     expect_key(state.Translate(true, 0x2A, false, true),
-               KeyAction::PostKey, kVK_CapsLock, 0, true);
+               KeyAction::ToggleCapsLockState, 0, 0, true);
     expect_key(state.Translate(false, 0x2A, false, true),
-               KeyAction::PostKey, kVK_CapsLock, 0, false);
+               KeyAction::ToggleCapsLockState, 0, 0, false);
     expect_key(state.Translate(true, 0x36, false, true),
-               KeyAction::PostKey, kVK_CapsLock, 0, true);
+               KeyAction::ToggleCapsLockState, 0, 0, true);
     expect_key(state.Translate(false, 0x36, false, true),
-               KeyAction::PostKey, kVK_CapsLock, 0, false);
+               KeyAction::ToggleCapsLockState, 0, 0, false);
 }
 
 TEST_CASE(controls_use_native_sided_keys) {

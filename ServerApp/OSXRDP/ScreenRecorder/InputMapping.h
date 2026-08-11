@@ -9,6 +9,7 @@ enum class KeyAction {
     Ignore,
     PostKey,
     SwitchInputSource,
+    ToggleCapsLockState,
     MissionControl,
 };
 

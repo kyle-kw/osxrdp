@@ -129,10 +129,10 @@ KeyEvent TranslateUncached(bool keyDown, int scanCode, bool extended,
         }
         if (macStyleEnabled) {
             switch (scanCode) {
-                case 0x2A: // Left Shift -> Caps Lock
-                case 0x36: // Right Shift -> Caps Lock
-                    keyCode = kVK_CapsLock;
-                    break;
+                case 0x2A: // Left Shift -> Caps Lock state
+                case 0x36: // Right Shift -> Caps Lock state
+                    return MakeKeyEvent(KeyAction::ToggleCapsLockState,
+                                        0, 0, keyDown);
                 case 0x38:
                     keyCode = kVK_Command; // Left Alt -> Left Command
                     break;
