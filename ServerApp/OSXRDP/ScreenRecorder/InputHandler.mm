@@ -49,9 +49,7 @@ InputHandler::InputHandler() :
     _lastMouseInputEventTime(0),
     _keyboardEventRef(0),
     _keyboardQueue(NULL),
-    _keyboardShuttingDown(false),
-    _imeSwitchPending(false),
-    _imeSwitchGeneration(0)
+    _keyboardShuttingDown(false)
 {
     memset(_displayLayouts, 0x00, sizeof(_displayLayouts));
     memset(&_verticalWheelState, 0x00, sizeof(_verticalWheelState));
@@ -71,8 +69,7 @@ InputHandler::~InputHandler() {
     __atomic_store_n(&_keyboardLifetime->active, false, __ATOMIC_RELEASE);
     auto shutdown = ^{
         _keyboardShuttingDown = true;
-        _imeSwitchGeneration++;
-        _imeSwitchPending = false;
+        _imeSwitchState.Cancel();
         _bufferedKeyboardEvents.clear();
     };
     if (_keyboardQueue != NULL) {
@@ -360,15 +357,14 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
 void InputHandler::HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
     if (_keyboardShuttingDown) return;
 
-    if (_imeSwitchPending) {
+    if (_imeSwitchState.active()) {
         if (_bufferedKeyboardEvents.size() < kMaxBufferedKeyboardEvents) {
             _bufferedKeyboardEvents.push_back(event);
             return;
         }
 
         NSLog(@"[InputHandler] IME keyboard buffer overflow; cancelling switch");
-        _imeSwitchGeneration++;
-        _imeSwitchPending = false;
+        _imeSwitchState.Cancel();
         FlushBufferedKeyboardEvents();
     }
 
@@ -772,9 +768,11 @@ InputHandler::ModifierStateChange InputHandler::UpdateKeyboardModifierState(CGKe
 void InputHandler::BeginIMESwitch() {
     if (_keyboardShuttingDown) return;
 
-    bool startBufferDeadline = !_imeSwitchPending;
-    _imeSwitchPending = true;
-    uint64_t generation = ++_imeSwitchGeneration;
+    IMESwitch::Transition transition = _imeSwitchState.RequestSwitch();
+    if (transition.effect != IMESwitch::Effect::StartOperation) {
+        return;
+    }
+
     InputHandler* handler = this;
     dispatch_queue_t keyboardQueue = _keyboardQueue;
     std::shared_ptr<KEYBOARD_LIFETIME> lifetime = _keyboardLifetime;
@@ -782,34 +780,54 @@ void InputHandler::BeginIMESwitch() {
     // The helper normally completes within 200ms, but it starts on the main
     // queue which may itself be busy. Enforce the buffering deadline on the
     // dedicated keyboard queue so keystrokes are never held longer than 200ms.
-    if (startBufferDeadline) {
+    if (transition.startDeadline) {
+        uint64_t sessionGeneration = transition.sessionGeneration;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
                        keyboardQueue, ^{
-            if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE) ||
-                !handler->_imeSwitchPending) return;
-            handler->CompleteIMESwitch(handler->_imeSwitchGeneration, false, 0.200);
+            if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
+            IMESwitch::Transition expired =
+                handler->_imeSwitchState.ExpireSession(sessionGeneration);
+            if (expired.effect != IMESwitch::Effect::Finish) return;
+            NSLog(@"[InputHandler] IME switch timed out after 0.200 seconds; flushing buffered keys");
+            [SessionMetrics.shared recordIMETimeout];
+            handler->FlushBufferedKeyboardEvents();
         });
     }
+
+    StartIMESwitchOperation(transition.operationGeneration);
+}
+
+void InputHandler::StartIMESwitchOperation(uint64_t operationGeneration) {
+    if (_keyboardShuttingDown) return;
+
+    InputHandler* handler = this;
+    dispatch_queue_t keyboardQueue = _keyboardQueue;
+    std::shared_ptr<KEYBOARD_LIFETIME> lifetime = _keyboardLifetime;
 
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
         [CJKHelper selectNextInputSourceWithWorkaround:
             ^(BOOL success, NSString *targetSourceID, NSString *actualSourceID, NSTimeInterval elapsed) {
                 NSLog(@"[InputHandler] IME switch generation=%llu success=%d target=%@ actual=%@ elapsed=%.3f",
-                      (unsigned long long)generation, success, targetSourceID, actualSourceID, elapsed);
+                      (unsigned long long)operationGeneration,
+                      success, targetSourceID, actualSourceID, elapsed);
                 if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
                 dispatch_async(keyboardQueue, ^{
                     if (!__atomic_load_n(&lifetime->active, __ATOMIC_ACQUIRE)) return;
-                    handler->CompleteIMESwitch(generation, success, elapsed);
+                    handler->CompleteIMESwitch(operationGeneration, success, elapsed);
                 });
             }];
     });
 }
 
 void InputHandler::CompleteIMESwitch(uint64_t generation, bool success, double elapsed) {
-    if (_keyboardShuttingDown || !_imeSwitchPending || generation != _imeSwitchGeneration) {
+    if (_keyboardShuttingDown) {
         return;
     }
+
+    IMESwitch::Transition transition =
+        _imeSwitchState.CompleteOperation(generation, success);
+    if (transition.effect == IMESwitch::Effect::None) return;
 
     if (!success) {
         if (elapsed >= 0.199) {
@@ -820,7 +838,12 @@ void InputHandler::CompleteIMESwitch(uint64_t generation, bool success, double e
             NSLog(@"[InputHandler] IME switch failed after %.3f seconds; flushing buffered keys", elapsed);
         }
     }
-    _imeSwitchPending = false;
+
+    if (transition.effect == IMESwitch::Effect::StartOperation) {
+        StartIMESwitchOperation(transition.operationGeneration);
+        return;
+    }
+
     FlushBufferedKeyboardEvents();
 }
 

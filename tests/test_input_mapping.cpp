@@ -73,7 +73,7 @@ TEST_CASE(disabled_mode_preserves_existing_modifier_behavior) {
                KeyAction::PostKey, kVK_RightShift, 0, false);
 }
 
-TEST_CASE(mac_style_maps_capslock_to_input_source_and_shift_to_capslock) {
+TEST_CASE(mac_style_maps_capslock_left_shift_and_right_shift_separately) {
     KeyboardState state;
 
     expect_key(state.Translate(true, 0x3A, false, true),
@@ -85,9 +85,48 @@ TEST_CASE(mac_style_maps_capslock_to_input_source_and_shift_to_capslock) {
     expect_key(state.Translate(false, 0x2A, false, true),
                KeyAction::ToggleCapsLockState, 0, 0, false);
     expect_key(state.Translate(true, 0x36, false, true),
-               KeyAction::ToggleCapsLockState, 0, 0, true);
+               KeyAction::PostKey, kVK_RightShift, 0, true);
     expect_key(state.Translate(false, 0x36, false, true),
+               KeyAction::PostKey, kVK_RightShift, 0, false);
+}
+
+TEST_CASE(single_shot_actions_ignore_repeated_keydown_until_release) {
+    KeyboardState state;
+
+    expect_key(state.Translate(true, 0x3A, false, true),
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, true);
+    expect_key(state.Translate(true, 0x3A, false, true),
+               KeyAction::Ignore, 0, 0, true);
+    expect_key(state.Translate(false, 0x3A, false, true),
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, false);
+    expect_key(state.Translate(true, 0x3A, false, true),
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, true);
+    expect_key(state.Translate(false, 0x3A, false, true),
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, false);
+
+    expect_key(state.Translate(true, 0x2A, false, true),
+               KeyAction::ToggleCapsLockState, 0, 0, true);
+    expect_key(state.Translate(true, 0x2A, false, true),
+               KeyAction::Ignore, 0, 0, true);
+    expect_key(state.Translate(false, 0x2A, false, true),
                KeyAction::ToggleCapsLockState, 0, 0, false);
+}
+
+TEST_CASE(right_shift_keeps_standard_symbol_chords) {
+    KeyboardState state;
+
+    expect_key(state.Translate(true, 0x36, false, true),
+               KeyAction::PostKey, kVK_RightShift, 0, true);
+    expect_key(state.Translate(true, 0x35, false, true),
+               KeyAction::PostKey, kVK_ANSI_Slash, 0, true);
+    expect_key(state.Translate(false, 0x35, false, true),
+               KeyAction::PostKey, kVK_ANSI_Slash, 0, false);
+    expect_key(state.Translate(true, 0x02, false, true),
+               KeyAction::PostKey, kVK_ANSI_1, 0, true);
+    expect_key(state.Translate(false, 0x02, false, true),
+               KeyAction::PostKey, kVK_ANSI_1, 0, false);
+    expect_key(state.Translate(false, 0x36, false, true),
+               KeyAction::PostKey, kVK_RightShift, 0, false);
 }
 
 TEST_CASE(controls_use_native_sided_keys) {
@@ -207,7 +246,9 @@ TEST_CASE(scroll_mapping_reverses_only_vertical_axis) {
 int main(void) {
     RUN_TEST(mac_style_maps_windows_and_alt_keys_by_side);
     RUN_TEST(disabled_mode_preserves_existing_modifier_behavior);
-    RUN_TEST(mac_style_maps_capslock_to_input_source_and_shift_to_capslock);
+    RUN_TEST(mac_style_maps_capslock_left_shift_and_right_shift_separately);
+    RUN_TEST(single_shot_actions_ignore_repeated_keydown_until_release);
+    RUN_TEST(right_shift_keeps_standard_symbol_chords);
     RUN_TEST(controls_use_native_sided_keys);
     RUN_TEST(home_and_end_add_command_without_persistent_modifier_state);
     RUN_TEST(windows_tab_maps_to_one_mission_control_action);

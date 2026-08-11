@@ -232,6 +232,10 @@ build_and_run_cxx test_input_mapping \
   -framework ApplicationServices \
   -framework Carbon
 
+build_and_run_cxx test_ime_switch_state \
+  "$ROOT/tests/test_ime_switch_state.cpp" \
+  "$ROOT/ServerApp/OSXRDP/ScreenRecorder/IMESwitchState.cpp"
+
 build_and_run test_input_source_selection \
   "$ROOT/tests/test_input_source_selection.c"
 

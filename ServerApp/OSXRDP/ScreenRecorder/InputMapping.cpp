@@ -130,7 +130,6 @@ KeyEvent TranslateUncached(bool keyDown, int scanCode, bool extended,
         if (macStyleEnabled) {
             switch (scanCode) {
                 case 0x2A: // Left Shift -> Caps Lock state
-                case 0x36: // Right Shift -> Caps Lock state
                     return MakeKeyEvent(KeyAction::ToggleCapsLockState,
                                         0, 0, keyDown);
                 case 0x38:
@@ -261,6 +260,12 @@ KeyEvent KeyboardState::Translate(bool keyDown, int scanCode, bool extended,
             }
             _missionControlTabDown = true;
             return MakeKeyEvent(KeyAction::MissionControl, 0, 0, true);
+        }
+
+        if (!firstKeyDown &&
+            (cached.action == KeyAction::SwitchInputSource ||
+             cached.action == KeyAction::ToggleCapsLockState)) {
+            return IgnoreEvent(true);
         }
 
         return MakeKeyEvent(cached.action, cached.keyCode,
