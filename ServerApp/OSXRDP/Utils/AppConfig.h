@@ -6,6 +6,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (class, readonly, strong) AppConfig *shared;
 
+// Map Windows input conventions to their native Mac equivalents.
+@property (assign) BOOL macNativeInputMappingEnabled;
+
 // Feature #12: auto-land clipboard files
 @property (assign) BOOL autoLandFiles;
 // Security-scoped bookmark data (NSURLBookmarkCreationWithSecurityScope) when available.

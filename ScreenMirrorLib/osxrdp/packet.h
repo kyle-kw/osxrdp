@@ -52,6 +52,8 @@
 #define XRDP_MOUSE_MBTNDOWN     106
 #define XRDP_MOUSE_WHEELUP      107
 #define XRDP_MOUSE_WHEELDOWN    109
+#define XRDP_MOUSE_HWHEELLEFT   111
+#define XRDP_MOUSE_HWHEELRIGHT  113
 #define XRDP_MOUSE_BBTNUP       115 // mouse back button (side)
 #define XRDP_MOUSE_BBTNDOWN     116
 #define XRDP_MOUSE_FBTNUP       117 // mouse forward button (side)

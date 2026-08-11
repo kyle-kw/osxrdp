@@ -23,6 +23,8 @@ keys=(
   "diag.error.agent_start_failed"
   "settings.startup.requires_approval"
   "settings.startup.unsupported"
+  "settings.input_mapping.title"
+  "settings.input_mapping.detail"
   "settings.diag.session_title"
   "filecopy.alert.success"
   "filecopy.alert.show_in_finder"

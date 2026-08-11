@@ -9,9 +9,9 @@
 #include <limits.h>
 
 #import "CJKHelper.h"
+#import "../Utils/AppConfig.h"
 #import "../Utils/SessionMetrics.h"
 
-#define _IME_SWITCH_CODE kVK_RightOption
 static const size_t kMaxBufferedKeyboardEvents = 128;
 
 static const CGEventFlags kDeviceLeftControlFlag = 0x00000001;
@@ -22,99 +22,6 @@ static const CGEventFlags kDeviceRightCommandFlag = 0x00000010;
 static const CGEventFlags kDeviceLeftOptionFlag = 0x00000020;
 static const CGEventFlags kDeviceRightOptionFlag = 0x00000040;
 static const CGEventFlags kDeviceRightControlFlag = 0x00002000;
-
-static const CGKeyCode keymap[] = {
-    /* 0x00 */ kVK_ANSI_A,                      // Placeholder (No key)
-    /* 0x01 */ kVK_Escape,                      // ESC
-    /* 0x02 */ kVK_ANSI_1,
-    /* 0x03 */ kVK_ANSI_2,
-    /* 0x04 */ kVK_ANSI_3,
-    /* 0x05 */ kVK_ANSI_4,
-    /* 0x06 */ kVK_ANSI_5,
-    /* 0x07 */ kVK_ANSI_6,
-    /* 0x08 */ kVK_ANSI_7,
-    /* 0x09 */ kVK_ANSI_8,
-    /* 0x0a */ kVK_ANSI_9,
-    /* 0x0b */ kVK_ANSI_0,
-    /* 0x0c */ kVK_ANSI_Minus,
-    /* 0x0d */ kVK_ANSI_Equal,
-    /* 0x0e */ kVK_Delete,                      // Backspace
-    /* 0x0f */ kVK_Tab,
-    /* 0x10 */ kVK_ANSI_Q,
-    /* 0x11 */ kVK_ANSI_W,
-    /* 0x12 */ kVK_ANSI_E,
-    /* 0x13 */ kVK_ANSI_R,
-    /* 0x14 */ kVK_ANSI_T,
-    /* 0x15 */ kVK_ANSI_Y,
-    /* 0x16 */ kVK_ANSI_U,
-    /* 0x17 */ kVK_ANSI_I,
-    /* 0x18 */ kVK_ANSI_O,
-    /* 0x19 */ kVK_ANSI_P,
-    /* 0x1a */ kVK_ANSI_LeftBracket,
-    /* 0x1b */ kVK_ANSI_RightBracket,
-    /* 0x1c */ kVK_Return,                      // Enter
-    /* 0x1d */ kVK_Control,                     // L Ctrl
-    /* 0x1e */ kVK_ANSI_A,
-    /* 0x1f */ kVK_ANSI_S,
-    /* 0x20 */ kVK_ANSI_D,
-    /* 0x21 */ kVK_ANSI_F,
-    /* 0x22 */ kVK_ANSI_G,
-    /* 0x23 */ kVK_ANSI_H,
-    /* 0x24 */ kVK_ANSI_J,
-    /* 0x25 */ kVK_ANSI_K,
-    /* 0x26 */ kVK_ANSI_L,
-    /* 0x27 */ kVK_ANSI_Semicolon,
-    /* 0x28 */ kVK_ANSI_Quote,
-    /* 0x29 */ kVK_ANSI_Grave,                  // ` (Backtick)
-    /* 0x2a */ kVK_Shift,                       // L Shift
-    /* 0x2b */ kVK_ANSI_Backslash,
-    /* 0x2c */ kVK_ANSI_Z,
-    /* 0x2d */ kVK_ANSI_X,
-    /* 0x2e */ kVK_ANSI_C,
-    /* 0x2f */ kVK_ANSI_V,
-    /* 0x30 */ kVK_ANSI_B,
-    /* 0x31 */ kVK_ANSI_N,
-    /* 0x32 */ kVK_ANSI_M,
-    /* 0x33 */ kVK_ANSI_Comma,
-    /* 0x34 */ kVK_ANSI_Period,
-    /* 0x35 */ kVK_ANSI_Slash,
-    /* 0x36 */ kVK_RightShift,
-    /* 0x37 */ kVK_ANSI_KeypadMultiply,
-    /* 0x38 */ kVK_Option,                      // L Alt (Mac Option)
-    /* 0x39 */ kVK_Space,
-    /* 0x3a */ kVK_CapsLock,
-    /* 0x3b */ kVK_F1,
-    /* 0x3c */ kVK_F2,
-    /* 0x3d */ kVK_F3,
-    /* 0x3e */ kVK_F4,
-    /* 0x3f */ kVK_F5,
-    /* 0x40 */ kVK_F6,
-    /* 0x41 */ kVK_F7,
-    /* 0x42 */ kVK_F8,
-    /* 0x43 */ kVK_F9,
-    /* 0x44 */ kVK_F10,
-    /* 0x45 */ kVK_ANSI_KeypadClear,            // NumLock
-    /* 0x46 */ kVK_F14,                         // Scroll Lock
-    /* 0x47 */ kVK_ANSI_Keypad7,
-    /* 0x48 */ kVK_ANSI_Keypad8,
-    /* 0x49 */ kVK_ANSI_Keypad9,
-    /* 0x4a */ kVK_ANSI_KeypadMinus,
-    /* 0x4b */ kVK_ANSI_Keypad4,
-    /* 0x4c */ kVK_ANSI_Keypad5,
-    /* 0x4d */ kVK_ANSI_Keypad6,
-    /* 0x4e */ kVK_ANSI_KeypadPlus,
-    /* 0x4f */ kVK_ANSI_Keypad1,
-    /* 0x50 */ kVK_ANSI_Keypad2,
-    /* 0x51 */ kVK_ANSI_Keypad3,
-    /* 0x52 */ kVK_ANSI_Keypad0,
-    /* 0x53 */ kVK_ANSI_KeypadDecimal,
-    /* 0x54 */ kVK_F13,                         // SysReq
-    /* 0x55 */ 0xFF,                            // (Not mapped)
-    /* 0x56 */ 0xFF,                            // (Not mapped)
-    /* 0x57 */ kVK_F11,
-    /* 0x58 */ kVK_F12,
-    /* 0x59 */ kVK_ANSI_KeypadEquals, // Keypad =
-};
 
 InputHandler::InputHandler() :
     _originalDisplayWidth(0),
@@ -140,12 +47,6 @@ InputHandler::InputHandler() :
     _lastMouseButton(-1),
     _lastMouseClickTime(0),
     _lastMouseInputEventTime(0),
-    _lastWheelEventTime(0),
-    _wheelEventBurstCount(0),
-    _fastWheelEventCount(0),
-    _lastWheelDirection(0),
-    _wheelSmoothedAmount(0.0f),
-    _lastWheelIsTrackpad(false),
     _keyboardEventRef(0),
     _keyboardQueue(NULL),
     _keyboardShuttingDown(false),
@@ -153,6 +54,8 @@ InputHandler::InputHandler() :
     _imeSwitchGeneration(0)
 {
     memset(_displayLayouts, 0x00, sizeof(_displayLayouts));
+    memset(&_verticalWheelState, 0x00, sizeof(_verticalWheelState));
+    memset(&_horizontalWheelState, 0x00, sizeof(_horizontalWheelState));
     _eventRef = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState);
     _keyboardEventRef = [CJKHelper sharedKeyboardEventSource];
     if (_keyboardEventRef != NULL) CFRetain(_keyboardEventRef);
@@ -259,6 +162,22 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
     CGEventRef ev = NULL;
     int mouseEventNumber = 0;
 
+    InputMapping::ScrollEvent scrollEvent;
+    if (InputMapping::TranslateScrollEvent(key,
+                                           AppConfig.shared.macNativeInputMappingEnabled,
+                                           &scrollEvent)) {
+        bool horizontal = scrollEvent.axis == InputMapping::ScrollAxis::Horizontal;
+        WHEEL_STATE* wheelState = horizontal ? &_horizontalWheelState : &_verticalWheelState;
+        int amount = GetMouseWheelMoveAmount(scrollEvent.direction, wheelState) * scrollEvent.direction;
+        if (wheelState->isTrackpad) {
+            PostTrackpadScrollEvent(amount, horizontal);
+        }
+        else {
+            PostScrollEvent(horizontal ? 0 : amount, horizontal ? amount : 0, false);
+        }
+        return;
+    }
+
     switch (key) {
         case XRDP_MOUSE_MOVE: {
             
@@ -350,24 +269,6 @@ void InputHandler::HandleMousseInputEvent(xstream_t* cmd) {
             
             break;
         }
-        case XRDP_MOUSE_WHEELUP : {
-            int amount = GetMouseWheelMoveAmount(1);
-            if (_lastWheelIsTrackpad) {
-                PostTrackpadScrollEvent(amount);
-                return;
-            }
-            PostScrollEvent(amount, false);
-            return;
-        }
-        case XRDP_MOUSE_WHEELDOWN : {
-            int amount = GetMouseWheelMoveAmount(-1) * -1;
-            if (_lastWheelIsTrackpad) {
-                PostTrackpadScrollEvent(amount);
-                return;
-            }
-            PostScrollEvent(amount, false);
-            return;
-        }
         case XRDP_MOUSE_BBTNUP: {
             ev = CGEventCreateMouseEvent(_eventRef, kCGEventOtherMouseUp, point, (CGMouseButton)3);
             mouseEventNumber = _backMouseEventNumber;
@@ -421,37 +322,38 @@ void InputHandler::HandleKeyboardInputEvent(xstream_t* cmd) {
     if (cmd == NULL || xstream_getRemaining(cmd) < (int)(sizeof(int) * 3)) return;
     
     int inputType = xstream_readInt32(cmd);
-    int keyCode = xstream_readInt32(cmd);
+    int scanCode = xstream_readInt32(cmd);
     int flags = xstream_readInt32(cmd);
 
-    
-    if (flags & 0x100) {
-        // convert xrdp extended key code to macOS keycode
-        keyCode = MapExtendedKey(keyCode & 0x7F);
-    }
-    else {
-        if (keyCode < 0 || keyCode > 89) {
-            return;
-        }
-        
-        // convert xrdp key code to macOS keycode
-        keyCode = keymap[keyCode];
-    }
-    
-    
-    if (keyCode == 0xFF ||
-        (inputType != XRDP_KEYBOARD_DOWN && inputType != XRDP_KEYBOARD_UP)) {
+    if (inputType != XRDP_KEYBOARD_DOWN && inputType != XRDP_KEYBOARD_UP) {
         return;
     }
 
-    if (keyCode == _IME_SWITCH_CODE) {
-        if (inputType == XRDP_KEYBOARD_DOWN) {
+    bool keyDown = inputType == XRDP_KEYBOARD_DOWN;
+    bool extended = (flags & 0x100) != 0;
+    int normalizedScanCode = extended ? (scanCode & 0x7F) : scanCode;
+    InputMapping::KeyEvent mapped = _inputMappingState.Translate(
+        keyDown,
+        normalizedScanCode,
+        extended,
+        AppConfig.shared.macNativeInputMappingEnabled);
+
+    if (mapped.action == InputMapping::KeyAction::Ignore) {
+        return;
+    }
+    if (mapped.action == InputMapping::KeyAction::SwitchInputSource) {
+        if (mapped.keyDown) {
             dispatch_async(_keyboardQueue, ^{ BeginIMESwitch(); });
         }
         return;
     }
 
-    KEYBOARD_EVENT event = { inputType, (CGKeyCode)keyCode };
+    KEYBOARD_EVENT event = {
+        mapped.action,
+        mapped.keyDown,
+        (CGKeyCode)mapped.keyCode,
+        (CGEventFlags)mapped.additionalFlags,
+    };
     dispatch_async(_keyboardQueue, ^{ HandleQueuedKeyboardEvent(event); });
 }
 
@@ -474,24 +376,22 @@ void InputHandler::HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
 }
 
 void InputHandler::PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
-    bool keyDown = false;
-    switch (event.inputType) {
-        case XRDP_KEYBOARD_DOWN:
-            keyDown = true;
-            break;
-        case XRDP_KEYBOARD_UP:
-            keyDown = false;
-            break;
-        default:
-            return;
+    if (event.action == InputMapping::KeyAction::MissionControl) {
+        if (event.keyDown) {
+            PostMissionControlShortcut();
+        }
+        return;
     }
-    
-    CGEventRef ev = CGEventCreateKeyboardEvent(_keyboardEventRef, event.keyCode, keyDown);
+    if (event.action != InputMapping::KeyAction::PostKey) {
+        return;
+    }
+
+    CGEventRef ev = CGEventCreateKeyboardEvent(_keyboardEventRef, event.keyCode, event.keyDown);
     if (ev == NULL) {
         return;
     }
 
-    ModifierStateChange modifierState = UpdateKeyboardModifierState(event.keyCode, keyDown);
+    ModifierStateChange modifierState = UpdateKeyboardModifierState(event.keyCode, event.keyDown);
     if (modifierState == ModifierStateChanged) {
         CGEventSetType(ev, kCGEventFlagsChanged);
     }
@@ -501,7 +401,7 @@ void InputHandler::PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
     }
 
     // Mission Control
-    CGEventFlags eventFlags = _keyboardModifierFlags;
+    CGEventFlags eventFlags = _keyboardModifierFlags | event.additionalFlags;
     if ((eventFlags & kCGEventFlagMaskControl) != 0 &&
         (event.keyCode == kVK_UpArrow || event.keyCode == kVK_DownArrow ||
          event.keyCode == kVK_LeftArrow || event.keyCode == kVK_RightArrow)) {
@@ -511,6 +411,22 @@ void InputHandler::PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event) {
     
     CGEventPost(kCGSessionEventTap, ev);
     CFRelease(ev);
+}
+
+void InputHandler::PostMissionControlShortcut() {
+    const CGEventFlags flags = kCGEventFlagMaskControl | kCGEventFlagMaskSecondaryFn;
+    CGEventRef keyDown = CGEventCreateKeyboardEvent(_keyboardEventRef, kVK_UpArrow, true);
+    CGEventRef keyUp = CGEventCreateKeyboardEvent(_keyboardEventRef, kVK_UpArrow, false);
+    if (keyDown != NULL) {
+        CGEventSetFlags(keyDown, flags);
+        CGEventPost(kCGSessionEventTap, keyDown);
+        CFRelease(keyDown);
+    }
+    if (keyUp != NULL) {
+        CGEventSetFlags(keyUp, flags);
+        CGEventPost(kCGSessionEventTap, keyUp);
+        CFRelease(keyUp);
+    }
 }
 
 void InputHandler::HandleMouseDoubleClick(CGEventRef ev, bool mouseDown, int mouseX, int mouseY, int mouseButton) {
@@ -585,7 +501,7 @@ long long InputHandler::GetCurrentEventTime() {
     return te.tv_sec * 1000LL + te.tv_usec / 1000;
 }
 
-int InputHandler::GetMouseWheelMoveAmount(int direction) {
+int InputHandler::GetMouseWheelMoveAmount(int direction, WHEEL_STATE* state) {
     const int kIdleGapMs = 180;
     const int kFastWheelGapMs = 18;
     const int kTrackpadGapMs = 45;
@@ -609,52 +525,56 @@ int InputHandler::GetMouseWheelMoveAmount(int direction) {
     long long gap = 0;
     bool newGesture = false;
     
-    if (_lastWheelEventTime == 0) {
+    if (state == NULL) {
+        return 0;
+    }
+
+    if (state->lastEventTime == 0) {
         newGesture = true;
     }
     else {
-        gap = currentTime - _lastWheelEventTime;
+        gap = currentTime - state->lastEventTime;
         if (gap > kIdleGapMs) {
             newGesture = true;
         }
     }
     
-    if (direction != 0 && _lastWheelDirection != 0 && direction != _lastWheelDirection) {
+    if (direction != 0 && state->lastDirection != 0 && direction != state->lastDirection) {
         newGesture = true;
     }
     
     if (newGesture) {
-        _wheelEventBurstCount = 0;
-        _fastWheelEventCount = 0;
+        state->eventBurstCount = 0;
+        state->fastEventCount = 0;
     }
     else {
-        _wheelEventBurstCount++;
+        state->eventBurstCount++;
     }
     
     // Only treat as trackpad when very short intervals come in consecutively.
     if (!newGesture && gap <= kFastWheelGapMs) {
-        _fastWheelEventCount++;
+        state->fastEventCount++;
     }
     else if (newGesture || gap >= kMouseConfirmGapMs) {
-        _fastWheelEventCount = 0;
+        state->fastEventCount = 0;
     }
 
-    if (_lastWheelEventTime != 0) {
-        if (_lastWheelIsTrackpad) {
+    if (state->lastEventTime != 0) {
+        if (state->isTrackpad) {
             if (gap >= kMouseConfirmGapMs) {
-                _lastWheelIsTrackpad = false;
+                state->isTrackpad = false;
             }
         }
-        else if (!newGesture && gap <= kTrackpadGapMs && _fastWheelEventCount >= 2) {
-            _lastWheelIsTrackpad = true;
+        else if (!newGesture && gap <= kTrackpadGapMs && state->fastEventCount >= 2) {
+            state->isTrackpad = true;
         }
         else if (gap >= kMouseConfirmGapMs) {
-            _lastWheelIsTrackpad = false;
+            state->isTrackpad = false;
         }
     }
     
     int target = 0;
-    if (_lastWheelIsTrackpad) {
+    if (state->isTrackpad) {
         if (gap <= 14) {
             target = 32;
         }
@@ -672,7 +592,7 @@ int InputHandler::GetMouseWheelMoveAmount(int direction) {
             target = 12;
         }
         
-        if (_wheelEventBurstCount > 18 && target > 16) {
+        if (state->eventBurstCount > 18 && target > 16) {
             target -= 4;
         }
     }
@@ -698,15 +618,15 @@ int InputHandler::GetMouseWheelMoveAmount(int direction) {
     }
     
     if (newGesture) {
-        _wheelSmoothedAmount = (float)target;
+        state->smoothedAmount = (float)target;
     }
     else {
-        float alpha = _lastWheelIsTrackpad ? 0.35f : 0.65f;
-        _wheelSmoothedAmount = (_wheelSmoothedAmount * (1.0f - alpha)) + (((float)target) * alpha);
+        float alpha = state->isTrackpad ? 0.35f : 0.65f;
+        state->smoothedAmount = (state->smoothedAmount * (1.0f - alpha)) + (((float)target) * alpha);
     }
     
-    int amount = (int)(_wheelSmoothedAmount + 0.5f);
-    if (_lastWheelIsTrackpad) {
+    int amount = (int)(state->smoothedAmount + 0.5f);
+    if (state->isTrackpad) {
         if (amount < kTrackpadMinAmount) {
             amount = kTrackpadMinAmount;
         }
@@ -723,14 +643,16 @@ int InputHandler::GetMouseWheelMoveAmount(int direction) {
         }
     }
     
-    _lastWheelEventTime = currentTime;
-    _lastWheelDirection = direction;
+    state->lastEventTime = currentTime;
+    state->lastDirection = direction;
     return amount;
 }
 
-void InputHandler::PostScrollEvent(int amount, bool continuous) {
+void InputHandler::PostScrollEvent(int verticalAmount, int horizontalAmount, bool continuous) {
     CGScrollEventUnit unit = continuous ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine;
-    CGEventRef ev = CGEventCreateScrollWheelEvent(NULL, unit, 1, amount, 0);
+    uint32_t wheelCount = horizontalAmount == 0 ? 1 : 2;
+    CGEventRef ev = CGEventCreateScrollWheelEvent(NULL, unit, wheelCount,
+                                                  verticalAmount, horizontalAmount);
     if (ev == NULL) {
         return;
     }
@@ -744,7 +666,7 @@ void InputHandler::PostScrollEvent(int amount, bool continuous) {
     CFRelease(ev);
 }
 
-void InputHandler::PostTrackpadScrollEvent(int amount) {
+void InputHandler::PostTrackpadScrollEvent(int amount, bool horizontal) {
     int absAmount = abs(amount);
     if (absAmount <= 0) {
         return;
@@ -767,32 +689,10 @@ void InputHandler::PostTrackpadScrollEvent(int amount) {
         if (part <= 0) {
             continue;
         }
-        PostScrollEvent(part * sign, true);
-    }
-}
-
-CGKeyCode InputHandler::MapExtendedKey(int scancode) {
-    switch (scancode) {
-        case 0x1C: return kVK_ANSI_KeypadEnter;
-        case 0x1D: return kVK_RightControl;
-        case 0x35: return kVK_ANSI_KeypadDivide;
-        case 0x37: return kVK_F13; // PrintScreen
-        case 0x38: return kVK_RightOption; // R Alt
-        case 0x72: return kVK_RightOption;
-        case 0x47: return kVK_Home;
-        case 0x48: return kVK_UpArrow;
-        case 0x49: return kVK_PageUp;
-        case 0x4B: return kVK_LeftArrow;
-        case 0x4D: return kVK_RightArrow;
-        case 0x4F: return kVK_End;
-        case 0x50: return kVK_DownArrow;
-        case 0x51: return kVK_PageDown;
-        case 0x52: return kVK_ForwardDelete; // Insert
-        case 0x53: return kVK_ForwardDelete; // Delete
-        case 0x5B: return kVK_Command; // Left Windows -> Command
-        case 0x5C: return kVK_RightCommand; // Right Windows -> Command
-        case 0x5D: return kVK_F13; // App key -> (Menu)
-        default: return 0xFF;
+        int signedPart = part * sign;
+        PostScrollEvent(horizontal ? 0 : signedPart,
+                        horizontal ? signedPart : 0,
+                        true);
     }
 }
 

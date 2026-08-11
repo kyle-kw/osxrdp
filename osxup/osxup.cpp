@@ -135,6 +135,8 @@ lib_mod_event(struct mod *mod, int msg, long param1, long param2,
         case XRDP_MOUSE_MBTNDOWN:
         case XRDP_MOUSE_WHEELUP:
         case XRDP_MOUSE_WHEELDOWN:
+        case XRDP_MOUSE_HWHEELLEFT:
+        case XRDP_MOUSE_HWHEELRIGHT:
         case XRDP_MOUSE_BBTNUP:
         case XRDP_MOUSE_BBTNDOWN:
         case XRDP_MOUSE_FBTNUP:

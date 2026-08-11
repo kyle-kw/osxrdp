@@ -1,5 +1,6 @@
 #import "AppConfig.h"
 
+static NSString *const kKeyMacNativeInputMappingEnabled = @"osxrdp.macNativeInputMappingEnabled";
 static NSString *const kKeyAutoLandFiles = @"osxrdp.autoLandFiles";
 static NSString *const kKeyAutoLandBookmark = @"osxrdp.autoLandFolderBookmark";
 static NSString *const kKeyMaxFramerate = @"osxrdp.maxFramerate";
@@ -21,6 +22,7 @@ static NSString *const kKeyPreferredCodec = @"osxrdp.preferredCodec";
 
 + (void)registerDefaults {
     NSDictionary *defaults = @{
+        kKeyMacNativeInputMappingEnabled: @YES,
         kKeyAutoLandFiles: @NO,
         kKeyMaxFramerate: @0,
         kKeyPreferredCodec: @"",
@@ -61,6 +63,15 @@ static NSString *const kKeyPreferredCodec = @"osxrdp.preferredCodec";
 }
 
 #pragma mark - Properties
+
+- (BOOL)macNativeInputMappingEnabled {
+    return [[NSUserDefaults standardUserDefaults] boolForKey:kKeyMacNativeInputMappingEnabled];
+}
+
+- (void)setMacNativeInputMappingEnabled:(BOOL)macNativeInputMappingEnabled {
+    [[NSUserDefaults standardUserDefaults] setBool:macNativeInputMappingEnabled
+                                           forKey:kKeyMacNativeInputMappingEnabled];
+}
 
 - (BOOL)autoLandFiles {
     return [[NSUserDefaults standardUserDefaults] boolForKey:kKeyAutoLandFiles];

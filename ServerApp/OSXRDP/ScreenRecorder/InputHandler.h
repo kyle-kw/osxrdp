@@ -1,6 +1,7 @@
 #ifndef InputHandler_hpp
 #define InputHandler_hpp
 
+#include "InputMapping.h"
 #include "xstream.h"
 #include <ApplicationServices/ApplicationServices.h>
 #include <dispatch/dispatch.h>
@@ -72,22 +73,28 @@ private:
     int _lastMouseButton;
     long long _lastMouseClickTime;
     long long _lastMouseInputEventTime;
-    long long _lastWheelEventTime;
-    int _wheelEventBurstCount;
-    int _fastWheelEventCount;
-    int _lastWheelDirection;
-    float _wheelSmoothedAmount;
-    bool _lastWheelIsTrackpad;
+
+    struct WHEEL_STATE {
+        long long lastEventTime;
+        int eventBurstCount;
+        int fastEventCount;
+        int lastDirection;
+        float smoothedAmount;
+        bool isTrackpad;
+    } _verticalWheelState, _horizontalWheelState;
     
     CGEventFlags _keyboardModifierFlags;
+    InputMapping::KeyboardState _inputMappingState;
     
     CGEventSourceRef _eventRef;
     CGEventSourceRef _keyboardEventRef;
     dispatch_queue_t _keyboardQueue;
 
     struct KEYBOARD_EVENT {
-        int inputType;
+        InputMapping::KeyAction action;
+        bool keyDown;
         CGKeyCode keyCode;
+        CGEventFlags additionalFlags;
     };
     std::deque<KEYBOARD_EVENT> _bufferedKeyboardEvents;
     struct KEYBOARD_LIFETIME {
@@ -100,9 +107,9 @@ private:
     
     void HandleMouseDoubleClick(CGEventRef ev, bool mouseDown, int mouseX, int mouseY, int mouseButton);
     bool MapClientPointToDisplayPoint(int clientX, int clientY, int* outX, int* outY);
-    int GetMouseWheelMoveAmount(int direction);
-    void PostScrollEvent(int amount, bool continuous);
-    void PostTrackpadScrollEvent(int amount);
+    int GetMouseWheelMoveAmount(int direction, WHEEL_STATE* state);
+    void PostScrollEvent(int verticalAmount, int horizontalAmount, bool continuous);
+    void PostTrackpadScrollEvent(int amount, bool horizontal);
     
     void RestorePreviousMouseKeydownEvent();
     
@@ -116,10 +123,10 @@ private:
         ModifierStateChanged
     };
 
-    CGKeyCode MapExtendedKey(int scancode);
     ModifierStateChange UpdateKeyboardModifierState(CGKeyCode key, bool isDown);
     void HandleQueuedKeyboardEvent(const KEYBOARD_EVENT& event);
     void PostQueuedKeyboardEvent(const KEYBOARD_EVENT& event);
+    void PostMissionControlShortcut();
     void BeginIMESwitch();
     void CompleteIMESwitch(uint64_t generation, bool success, double elapsed);
     void FlushBufferedKeyboardEvents();

@@ -10,6 +10,7 @@
 @property (strong) NSSwitch *startupSwitch;
 @property (strong) NSTextField *startupStatusLabel;
 @property (strong) NSButton *startupSettingsButton;
+@property (strong) NSSwitch *macNativeInputSwitch;
 @property (strong) NSSwitch *autoLandSwitch;
 @property (strong) NSTextField *folderLabel;
 @property (strong) NSButton *folderPickerButton;
@@ -134,6 +135,24 @@
     [startupText setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
     InsetCardView *startupCard = [self cardWithContentView:startupRow];
 
+    NSTextField *inputTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.input_mapping.title", nil)];
+    inputTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
+    NSTextField *inputDetail = [NSTextField wrappingLabelWithString:NSLocalizedString(@"settings.input_mapping.detail", nil)];
+    inputDetail.font = [NSFont systemFontOfSize:11.0];
+    inputDetail.textColor = NSColor.secondaryLabelColor;
+    NSStackView *inputText = [NSStackView stackViewWithViews:@[inputTitle, inputDetail]];
+    inputText.orientation = NSUserInterfaceLayoutOrientationVertical;
+    inputText.alignment = NSLayoutAttributeLeading;
+    inputText.spacing = 3.0;
+    self.macNativeInputSwitch = [[NSSwitch alloc] init];
+    self.macNativeInputSwitch.target = self;
+    self.macNativeInputSwitch.action = @selector(macNativeInputChanged:);
+    NSStackView *inputRow = [NSStackView stackViewWithViews:@[inputText, self.macNativeInputSwitch]];
+    inputRow.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    inputRow.alignment = NSLayoutAttributeCenterY;
+    [inputText setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    InsetCardView *inputCard = [self cardWithContentView:inputRow];
+
     NSTextField *clipboardTitle = [NSTextField labelWithString:NSLocalizedString(@"settings.files.title", nil)];
     clipboardTitle.font = [NSFont systemFontOfSize:13.0 weight:NSFontWeightMedium];
     NSTextField *clipboardDetail = [NSTextField wrappingLabelWithString:NSLocalizedString(@"settings.files.detail", nil)];
@@ -174,7 +193,7 @@
     [destinationRow.widthAnchor constraintEqualToAnchor:fileStack.widthAnchor].active = YES;
     InsetCardView *fileCard = [self cardWithContentView:fileStack];
 
-    NSStackView *root = [NSStackView stackViewWithViews:@[startupCard, fileCard]];
+    NSStackView *root = [NSStackView stackViewWithViews:@[startupCard, inputCard, fileCard]];
     root.translatesAutoresizingMaskIntoConstraints = NO;
     root.orientation = NSUserInterfaceLayoutOrientationVertical;
     root.alignment = NSLayoutAttributeLeading;
@@ -185,6 +204,7 @@
         [root.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-18.0],
         [root.topAnchor constraintEqualToAnchor:view.topAnchor constant:18.0],
         [startupCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
+        [inputCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
         [fileCard.widthAnchor constraintEqualToAnchor:root.widthAnchor],
     ]];
     return view;
@@ -259,6 +279,8 @@
 }
 
 - (void)loadSettings {
+    self.macNativeInputSwitch.state = AppConfig.shared.macNativeInputMappingEnabled
+        ? NSControlStateValueOn : NSControlStateValueOff;
     self.autoLandSwitch.state = AppConfig.shared.autoLandFiles ? NSControlStateValueOn : NSControlStateValueOff;
     [self updateFolderLabel];
     [self updateFileControls];
@@ -336,6 +358,12 @@
 
 - (IBAction)openLoginItemsSettingsClicked:(id)sender {
     StartupManager::OpenLoginItemsSettings();
+    (void)sender;
+}
+
+- (IBAction)macNativeInputChanged:(id)sender {
+    AppConfig.shared.macNativeInputMappingEnabled =
+        self.macNativeInputSwitch.state == NSControlStateValueOn;
     (void)sender;
 }
 

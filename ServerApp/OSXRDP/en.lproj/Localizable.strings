@@ -92,6 +92,8 @@
 "settings.startup.error.message" = "The login item setting could not be changed.";
 "settings.startup.approval.title" = "Approval Required";
 "settings.startup.approval.message" = "Allow OSXRDP under Login Items in System Settings to finish enabling Launch at Login.";
+"settings.input_mapping.title" = "Use Mac-style Input";
+"settings.input_mapping.detail" = "Map Windows modifier keys, navigation keys, and vertical scrolling to Mac behavior.";
 "settings.files.title" = "Automatically Save Copied Files";
 "settings.files.detail" = "Save files received from an RDP client without asking for a destination each time.";
 "settings.files.destination" = "Destination";
