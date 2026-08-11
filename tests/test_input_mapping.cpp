@@ -59,15 +59,40 @@ TEST_CASE(disabled_mode_preserves_existing_modifier_behavior) {
                KeyAction::SwitchInputSource, kVK_RightOption, 0, true);
     expect_key(state.Translate(false, 0x38, true, false),
                KeyAction::SwitchInputSource, kVK_RightOption, 0, false);
+    expect_key(state.Translate(true, 0x3A, false, false),
+               KeyAction::PostKey, kVK_CapsLock, 0, true);
+    expect_key(state.Translate(false, 0x3A, false, false),
+               KeyAction::PostKey, kVK_CapsLock, 0, false);
+    expect_key(state.Translate(true, 0x2A, false, false),
+               KeyAction::PostKey, kVK_Shift, 0, true);
+    expect_key(state.Translate(false, 0x2A, false, false),
+               KeyAction::PostKey, kVK_Shift, 0, false);
+    expect_key(state.Translate(true, 0x36, false, false),
+               KeyAction::PostKey, kVK_RightShift, 0, true);
+    expect_key(state.Translate(false, 0x36, false, false),
+               KeyAction::PostKey, kVK_RightShift, 0, false);
 }
 
-TEST_CASE(capslock_and_controls_use_native_sided_keys) {
+TEST_CASE(mac_style_maps_capslock_to_input_source_and_shift_to_capslock) {
     KeyboardState state;
 
     expect_key(state.Translate(true, 0x3A, false, true),
-               KeyAction::PostKey, kVK_CapsLock, 0, true);
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, true);
     expect_key(state.Translate(false, 0x3A, false, true),
+               KeyAction::SwitchInputSource, kVK_CapsLock, 0, false);
+    expect_key(state.Translate(true, 0x2A, false, true),
+               KeyAction::PostKey, kVK_CapsLock, 0, true);
+    expect_key(state.Translate(false, 0x2A, false, true),
                KeyAction::PostKey, kVK_CapsLock, 0, false);
+    expect_key(state.Translate(true, 0x36, false, true),
+               KeyAction::PostKey, kVK_CapsLock, 0, true);
+    expect_key(state.Translate(false, 0x36, false, true),
+               KeyAction::PostKey, kVK_CapsLock, 0, false);
+}
+
+TEST_CASE(controls_use_native_sided_keys) {
+    KeyboardState state;
+
     expect_key(state.Translate(true, 0x1D, false, true),
                KeyAction::PostKey, kVK_Control, 0, true);
     expect_key(state.Translate(false, 0x1D, false, true),
@@ -182,7 +207,8 @@ TEST_CASE(scroll_mapping_reverses_only_vertical_axis) {
 int main(void) {
     RUN_TEST(mac_style_maps_windows_and_alt_keys_by_side);
     RUN_TEST(disabled_mode_preserves_existing_modifier_behavior);
-    RUN_TEST(capslock_and_controls_use_native_sided_keys);
+    RUN_TEST(mac_style_maps_capslock_to_input_source_and_shift_to_capslock);
+    RUN_TEST(controls_use_native_sided_keys);
     RUN_TEST(home_and_end_add_command_without_persistent_modifier_state);
     RUN_TEST(windows_tab_maps_to_one_mission_control_action);
     RUN_TEST(disabled_windows_tab_remains_a_normal_tab_chord);

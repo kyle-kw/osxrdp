@@ -127,8 +127,21 @@ KeyEvent TranslateUncached(bool keyDown, int scanCode, bool extended,
         if (keyCode == kInvalidKeyCode) {
             return IgnoreEvent(keyDown);
         }
-        if (macStyleEnabled && scanCode == 0x38) {
-            keyCode = kVK_Command; // Left Alt -> Left Command
+        if (macStyleEnabled) {
+            switch (scanCode) {
+                case 0x2A: // Left Shift -> Caps Lock
+                case 0x36: // Right Shift -> Caps Lock
+                    keyCode = kVK_CapsLock;
+                    break;
+                case 0x38:
+                    keyCode = kVK_Command; // Left Alt -> Left Command
+                    break;
+                case 0x3A: // Caps Lock -> input source switch
+                    return MakeKeyEvent(KeyAction::SwitchInputSource,
+                                        kVK_CapsLock, 0, keyDown);
+                default:
+                    break;
+            }
         }
         return MakeKeyEvent(KeyAction::PostKey, keyCode, 0, keyDown);
     }
